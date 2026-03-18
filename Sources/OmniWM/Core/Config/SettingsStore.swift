@@ -704,7 +704,8 @@ final class SettingsStore {
             centerFocusedColumn: override?.centerFocusedColumn ?? niriCenterFocusedColumn,
             alwaysCenterSingleColumn: override?.alwaysCenterSingleColumn ?? niriAlwaysCenterSingleColumn,
             singleWindowAspectRatio: override?.singleWindowAspectRatio ?? niriSingleWindowAspectRatio,
-            infiniteLoop: override?.infiniteLoop ?? niriInfiniteLoop
+            infiniteLoop: override?.infiniteLoop ?? niriInfiniteLoop,
+            defaultColumnWidth: override?.defaultColumnWidth ?? niriDefaultColumnWidth
         )
     }
 

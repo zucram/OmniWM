@@ -515,6 +515,17 @@ private struct MonitorNiriSettingsSection: View {
                     onChange: { newValue in updateSetting { $0.singleWindowAspectRatio = newValue } },
                     onReset: { updateSetting { $0.singleWindowAspectRatio = nil } }
                 )
+
+                OverridableSlider(
+                    label: "Default Column Width",
+                    value: ms.defaultColumnWidth.map { $0 * 100 },
+                    globalValue: (settings.niriDefaultColumnWidth ?? (1.0 / Double(settings.niriMaxVisibleColumns))) * 100,
+                    range: 5 ... 100,
+                    step: 1,
+                    formatter: { "\(Int($0))%" },
+                    onChange: { newValue in updateSetting { $0.defaultColumnWidth = newValue / 100.0 } },
+                    onReset: { updateSetting { $0.defaultColumnWidth = nil } }
+                )
             }
         }
     }

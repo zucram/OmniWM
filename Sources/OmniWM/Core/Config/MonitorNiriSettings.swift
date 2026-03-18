@@ -12,6 +12,7 @@ struct MonitorNiriSettings: MonitorSettingsType {
     var alwaysCenterSingleColumn: Bool?
     var singleWindowAspectRatio: SingleWindowAspectRatio?
     var infiniteLoop: Bool?
+    var defaultColumnWidth: Double?
 
     init(
         id: UUID = UUID(),
@@ -22,7 +23,8 @@ struct MonitorNiriSettings: MonitorSettingsType {
         centerFocusedColumn: CenterFocusedColumn? = nil,
         alwaysCenterSingleColumn: Bool? = nil,
         singleWindowAspectRatio: SingleWindowAspectRatio? = nil,
-        infiniteLoop: Bool? = nil
+        infiniteLoop: Bool? = nil,
+        defaultColumnWidth: Double? = nil
     ) {
         self.id = id
         self.monitorName = monitorName
@@ -33,11 +35,13 @@ struct MonitorNiriSettings: MonitorSettingsType {
         self.alwaysCenterSingleColumn = alwaysCenterSingleColumn
         self.singleWindowAspectRatio = singleWindowAspectRatio
         self.infiniteLoop = infiniteLoop
+        self.defaultColumnWidth = defaultColumnWidth
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, monitorName, monitorDisplayId, maxVisibleColumns, maxWindowsPerColumn
         case centerFocusedColumn, alwaysCenterSingleColumn, singleWindowAspectRatio, infiniteLoop
+        case defaultColumnWidth
     }
 
     init(from decoder: Decoder) throws {
@@ -53,6 +57,7 @@ struct MonitorNiriSettings: MonitorSettingsType {
         singleWindowAspectRatio = try container.decodeIfPresent(String.self, forKey: .singleWindowAspectRatio)
             .flatMap { SingleWindowAspectRatio(rawValue: $0) }
         infiniteLoop = try container.decodeIfPresent(Bool.self, forKey: .infiniteLoop)
+        defaultColumnWidth = try container.decodeIfPresent(Double.self, forKey: .defaultColumnWidth)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -66,6 +71,7 @@ struct MonitorNiriSettings: MonitorSettingsType {
         try container.encodeIfPresent(alwaysCenterSingleColumn, forKey: .alwaysCenterSingleColumn)
         try container.encodeIfPresent(singleWindowAspectRatio?.rawValue, forKey: .singleWindowAspectRatio)
         try container.encodeIfPresent(infiniteLoop, forKey: .infiniteLoop)
+        try container.encodeIfPresent(defaultColumnWidth, forKey: .defaultColumnWidth)
     }
 }
 
@@ -76,4 +82,5 @@ struct ResolvedNiriSettings: Equatable {
     let alwaysCenterSingleColumn: Bool
     let singleWindowAspectRatio: SingleWindowAspectRatio
     let infiniteLoop: Bool
+    let defaultColumnWidth: Double?
 }

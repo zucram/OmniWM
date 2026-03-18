@@ -55,7 +55,8 @@ extension NiriLayoutEngine {
             centerFocusedColumn: centerFocusedColumn,
             alwaysCenterSingleColumn: alwaysCenterSingleColumn,
             singleWindowAspectRatio: singleWindowAspectRatio,
-            infiniteLoop: infiniteLoop
+            infiniteLoop: infiniteLoop,
+            defaultColumnWidth: defaultColumnWidth.map { Double($0) }
         )
     }
 
@@ -116,6 +117,10 @@ extension NiriLayoutEngine {
 
     func effectiveInfiniteLoop(in workspaceId: WorkspaceDescriptor.ID) -> Bool {
         effectiveSettings(in: workspaceId).infiniteLoop
+    }
+
+    func effectiveDefaultColumnWidth(in workspaceId: WorkspaceDescriptor.ID) -> CGFloat? {
+        effectiveSettings(in: workspaceId).defaultColumnWidth.map { CGFloat($0) }
     }
 
     func moveWorkspace(
