@@ -183,9 +183,9 @@ final class NiriLayoutEngine {
     }
 
     func initializeNewColumnWidth(_ column: NiriContainer, in workspaceId: WorkspaceDescriptor.ID) {
-        if let defaultColumnWidth {
-            column.width = .proportion(defaultColumnWidth)
-            column.presetWidthIdx = matchingPresetIndex(for: defaultColumnWidth)
+        if let effectiveWidth = effectiveDefaultColumnWidth(in: workspaceId) {
+            column.width = .proportion(effectiveWidth)
+            column.presetWidthIdx = matchingPresetIndex(for: effectiveWidth)
         } else {
             column.width = .proportion(1.0 / CGFloat(effectiveMaxVisibleColumns(in: workspaceId)))
             column.presetWidthIdx = nil
