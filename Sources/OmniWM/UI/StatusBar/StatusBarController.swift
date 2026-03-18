@@ -101,20 +101,18 @@ final class StatusBarController: NSObject {
 
         // Update button title to focused workspace name
         if let button = statusItem?.button {
-            if settings.statusBarShowWorkspaceName {
-                let focusedName = items.first(where: \.isFocused)?.name
-                if let name = focusedName {
-                    button.title = " \(name)"
-                    button.image = nil
-                } else {
-                    button.title = ""
-                    button.image = NSImage(systemSymbolName: "o.circle", accessibilityDescription: "OmniWM")
-                    button.image?.isTemplate = true
-                }
-            } else {
-                button.title = ""
+            // Always keep the icon
+            if button.image == nil {
                 button.image = NSImage(systemSymbolName: "o.circle", accessibilityDescription: "OmniWM")
                 button.image?.isTemplate = true
+            }
+            if settings.statusBarShowWorkspaceName,
+               let name = items.first(where: \.isFocused)?.name
+            {
+                button.title = " \(name)"
+                button.imagePosition = .imageLeft
+            } else {
+                button.title = ""
             }
         }
 

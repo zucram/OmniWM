@@ -81,32 +81,29 @@ final class StatusBarMenuBuilder {
         insertedCount += 1
 
         for item in items {
-            let menuItem = NSMenuItem()
-            menuItem.tag = Self.workspaceItemTag
+            let workspaceName = item.name
 
-            // Title: workspace name, optionally with app names
-            var title = item.name
+            var appSuffix = ""
             if settings.statusBarShowAppNames {
-                let appNames = item.windows.map(\.appName)
+                let appNames = item.windows.compactMap(\.appName)
                 if !appNames.isEmpty {
                     let appList = appNames.joined(separator: ", ")
-                    let maxAppListLength = 40
-                    let truncated = appList.count > maxAppListLength
-                        ? String(appList.prefix(maxAppListLength)) + "..."
+                    let truncated = appList.count > 38
+                        ? String(appList.prefix(38)) + "…"
                         : appList
-                    title += "  \u{2013}  " + truncated  // en-dash
+                    appSuffix = "  \u{2013}  " + truncated
                 }
             }
 
-            menuItem.title = title
-            menuItem.state = item.isFocused ? .on : .off
-            menuItem.isEnabled = true
+            let icon = item.isFocused ? "checkmark" : "circle"
+            let label = workspaceName + appSuffix
+            let rowView = MenuActionRowView(icon: icon, label: label) { [weak self] in
+                self?.controller?.focusWorkspaceFromBar(named: workspaceName)
+            }
 
-            let workspaceName = item.name
-            menuItem.target = self
-            menuItem.action = #selector(workspaceMenuItemClicked(_:))
-            menuItem.representedObject = workspaceName
-
+            let menuItem = NSMenuItem()
+            menuItem.tag = Self.workspaceItemTag
+            menuItem.view = rowView
             menu.insertItem(menuItem, at: insertionIndex)
             insertionIndex += 1
             insertedCount += 1
@@ -119,11 +116,6 @@ final class StatusBarMenuBuilder {
         insertedCount += 1
 
         workspaceSectionItemCount = insertedCount
-    }
-
-    @objc private func workspaceMenuItemClicked(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        controller?.focusWorkspaceFromBar(named: name)
     }
 
     func updateToggles() {
