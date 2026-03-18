@@ -42,6 +42,20 @@ struct GeneralSettingsTab: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("Status Bar") {
+                Toggle("Show Workspace Name", isOn: $settings.statusBarShowWorkspaceName)
+                    .onChange(of: settings.statusBarShowWorkspaceName) { _, _ in
+                        controller.refreshStatusBar()
+                    }
+                Toggle("Show App Names in Menu", isOn: $settings.statusBarShowAppNames)
+                    .onChange(of: settings.statusBarShowAppNames) { _, _ in
+                        controller.refreshStatusBar()
+                    }
+                Text("Shows current workspace in the menu bar icon instead of the floating bar")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Layout") {
                 HStack {
                     Text("Inner Gaps")
