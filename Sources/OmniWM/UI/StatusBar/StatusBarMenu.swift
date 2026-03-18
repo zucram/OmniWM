@@ -9,6 +9,13 @@ final class StatusBarMenuBuilder {
 
     private var toggleViews: [String: MenuToggleRowView] = [:]
 
+    /// Tag used to identify workspace menu items for incremental rebuilds.
+    private static let workspaceItemTag = 9000
+    /// Index in the menu where the workspace section starts (after header + divider + label).
+    private var workspaceSectionStartIndex: Int = 0
+    /// Number of workspace items currently in the menu (including the label and trailing divider).
+    private var workspaceSectionItemCount: Int = 0
+
     init(settings: SettingsStore, controller: WMController) {
         self.settings = settings
         self.controller = controller
@@ -23,6 +30,10 @@ final class StatusBarMenuBuilder {
         menu.addItem(headerItem)
 
         menu.addItem(createDivider())
+
+        // Workspace section placeholder — filled by updateWorkspaces(_:)
+        workspaceSectionStartIndex = menu.items.count
+        workspaceSectionItemCount = 0
 
         menu.addItem(createSectionLabel("CONTROLS"))
         addControlsSection(to: menu)
@@ -46,6 +57,73 @@ final class StatusBarMenuBuilder {
         addQuitSection(to: menu)
 
         return menu
+    }
+
+    func updateWorkspaces(_ items: [WorkspaceBarItem], in menu: NSMenu) {
+        // Remove previous workspace items
+        for _ in 0..<workspaceSectionItemCount {
+            menu.removeItem(at: workspaceSectionStartIndex)
+        }
+
+        guard !items.isEmpty else {
+            workspaceSectionItemCount = 0
+            return
+        }
+
+        var insertionIndex = workspaceSectionStartIndex
+        var insertedCount = 0
+
+        // Section label
+        let label = createSectionLabel("WORKSPACES")
+        label.tag = Self.workspaceItemTag
+        menu.insertItem(label, at: insertionIndex)
+        insertionIndex += 1
+        insertedCount += 1
+
+        for item in items {
+            let menuItem = NSMenuItem()
+            menuItem.tag = Self.workspaceItemTag
+
+            // Title: workspace name, optionally with app names
+            var title = item.name
+            if settings.statusBarShowAppNames {
+                let appNames = item.windows.map(\.appName)
+                if !appNames.isEmpty {
+                    let appList = appNames.joined(separator: ", ")
+                    let maxAppListLength = 40
+                    let truncated = appList.count > maxAppListLength
+                        ? String(appList.prefix(maxAppListLength)) + "..."
+                        : appList
+                    title += "  \u{2013}  " + truncated  // en-dash
+                }
+            }
+
+            menuItem.title = title
+            menuItem.state = item.isFocused ? .on : .off
+            menuItem.isEnabled = true
+
+            let workspaceName = item.name
+            menuItem.target = self
+            menuItem.action = #selector(workspaceMenuItemClicked(_:))
+            menuItem.representedObject = workspaceName
+
+            menu.insertItem(menuItem, at: insertionIndex)
+            insertionIndex += 1
+            insertedCount += 1
+        }
+
+        // Trailing divider
+        let divider = createDivider()
+        divider.tag = Self.workspaceItemTag
+        menu.insertItem(divider, at: insertionIndex)
+        insertedCount += 1
+
+        workspaceSectionItemCount = insertedCount
+    }
+
+    @objc private func workspaceMenuItemClicked(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        controller?.focusWorkspaceFromBar(named: name)
     }
 
     func updateToggles() {

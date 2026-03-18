@@ -109,6 +109,7 @@ final class WMController {
 
     let animationClock = AnimationClock()
     private let windowFocusOperations: WindowFocusOperations
+    weak var statusBarController: StatusBarController?
 
     init(
         settings: SettingsStore,
@@ -268,7 +269,7 @@ final class WMController {
     func requestWorkspaceBarRefresh() {
         workspaceBarRefreshDebugState.requestCount += 1
 
-        guard workspaceBarRefreshIsEnabled else { return }
+        guard anyBarRefreshIsEnabled else { return }
         guard pendingWorkspaceBarRefreshGeneration == nil else { return }
 
         let generation = workspaceBarRefreshGeneration
@@ -296,6 +297,10 @@ final class WMController {
 
     func isManagedWindowSuspendedForNativeFullscreen(_ token: WindowToken) -> Bool {
         workspaceManager.isNativeFullscreenSuspended(token)
+    }
+
+    func refreshStatusBar() {
+        statusBarController?.refreshWorkspaces()
     }
 
     func updateWorkspaceBarSettings() {
@@ -438,6 +443,10 @@ final class WMController {
         settings.workspaceBarEnabled || settings.monitorBarSettings.contains(where: { $0.enabled == true })
     }
 
+    private var anyBarRefreshIsEnabled: Bool {
+        workspaceBarRefreshIsEnabled || statusBarController != nil
+    }
+
     private func flushRequestedWorkspaceBarRefresh(expectedGeneration: UInt64) {
         guard pendingWorkspaceBarRefreshGeneration == expectedGeneration,
               workspaceBarRefreshGeneration == expectedGeneration
@@ -448,11 +457,15 @@ final class WMController {
         pendingWorkspaceBarRefreshGeneration = nil
         workspaceBarRefreshDebugState.isQueued = false
 
-        guard workspaceBarRefreshIsEnabled else { return }
+        guard anyBarRefreshIsEnabled else { return }
 
         workspaceBarRefreshDebugState.executionCount += 1
         workspaceBarRefreshExecutionHookForTests?()
-        workspaceBarManager.update()
+
+        if workspaceBarRefreshIsEnabled {
+            workspaceBarManager.update()
+        }
+        statusBarController?.refreshWorkspaces()
     }
 
     private func cancelPendingWorkspaceBarRefresh() {

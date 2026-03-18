@@ -90,6 +90,40 @@ final class StatusBarController: NSObject {
         menuBuilder?.updateToggles()
     }
 
+    func refreshWorkspaces() {
+        guard let controller else { return }
+
+        // Gather workspace items from the first/primary monitor
+        let monitors = controller.workspaceManager.monitors
+        guard let monitor = monitors.first else { return }
+
+        let items = controller.workspaceBarItems(for: monitor, deduplicate: true, hideEmpty: false)
+
+        // Update button title to focused workspace name
+        if let button = statusItem?.button {
+            if settings.statusBarShowWorkspaceName {
+                let focusedName = items.first(where: \.isFocused)?.name
+                if let name = focusedName {
+                    button.title = " \(name)"
+                    button.image = nil
+                } else {
+                    button.title = ""
+                    button.image = NSImage(systemSymbolName: "o.circle", accessibilityDescription: "OmniWM")
+                    button.image?.isTemplate = true
+                }
+            } else {
+                button.title = ""
+                button.image = NSImage(systemSymbolName: "o.circle", accessibilityDescription: "OmniWM")
+                button.image?.isTemplate = true
+            }
+        }
+
+        // Rebuild workspace section in menu
+        if let menu, let menuBuilder {
+            menuBuilder.updateWorkspaces(items, in: menu)
+        }
+    }
+
     func cleanup() {
         cleanupOwnedStatusItems()
     }
