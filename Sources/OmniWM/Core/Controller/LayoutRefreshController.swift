@@ -82,6 +82,7 @@ import QuartzCore
     enum HideReason {
         case workspaceInactive
         case layoutTransient
+        case scratchpad
     }
 
     struct LayoutState {
@@ -999,37 +1000,21 @@ import QuartzCore
             let decision = evaluation.decision
             let existingEntry = controller.workspaceManager.entry(for: token)
 
-            if let existingEntry, !decision.isResolved {
-                if appFullscreen {
-                    _ = controller.workspaceManager.markNativeFullscreenSuspended(existingEntry.token)
-                } else if controller.workspaceManager.nativeFullscreenRecord(for: existingEntry.token) != nil
-                    || existingEntry.layoutReason == .nativeFullscreen
-                {
-                    _ = controller.workspaceManager.restoreNativeFullscreenRecord(for: existingEntry.token)
-                }
-
-                _ = controller.workspaceManager.addWindow(
-                    ax,
-                    pid: pid,
-                    windowId: winId,
-                    to: existingEntry.workspaceId,
-                    ruleEffects: existingEntry.ruleEffects
-                )
-                seenKeys.insert(token)
-                continue
-            }
-
-            guard decision.managesWindow else {
+            guard let trackedMode = controller.trackedModeForLifecycle(
+                decision: decision,
+                existingEntry: existingEntry
+            ) else {
                 if existingEntry != nil {
                     decisionBasedRemovals.append(token)
                 }
                 continue
             }
 
-            let defaultWorkspace = controller.resolveWorkspaceForNewWindow(
-                workspaceName: decision.workspaceName,
+            let defaultWorkspace = controller.resolvedWorkspaceId(
+                for: evaluation,
                 axRef: ax,
                 pid: pid,
+                existingEntry: existingEntry,
                 fallbackWorkspaceId: focusedWorkspaceId
             )
             if controller.workspaceAssignment(pid: pid, windowId: winId) == nil {
@@ -1053,14 +1038,30 @@ import QuartzCore
             }
             let existingAssignment = controller.workspaceAssignment(pid: pid, windowId: winId)
             let wsForWindow = existingAssignment ?? defaultWorkspace
+            let oldMode = existingEntry?.mode
 
             _ = controller.workspaceManager.addWindow(
                 ax,
                 pid: pid,
                 windowId: winId,
                 to: wsForWindow,
+                mode: oldMode ?? trackedMode,
                 ruleEffects: decision.ruleEffects
             )
+
+            if let oldMode, oldMode != trackedMode {
+                _ = controller.transitionWindowMode(
+                    for: token,
+                    to: trackedMode,
+                    preferredMonitor: controller.workspaceManager.monitor(for: wsForWindow),
+                    applyFloatingFrame: false
+                )
+            } else if trackedMode == .floating {
+                controller.seedFloatingGeometryIfNeeded(
+                    for: token,
+                    preferredMonitor: controller.workspaceManager.monitor(for: wsForWindow)
+                )
+            }
             seenKeys.insert(token)
         }
 
@@ -1658,8 +1659,7 @@ import QuartzCore
             return WindowModel.HiddenState(
                 proportionalPosition: .zero,
                 referenceMonitorId: nil,
-                workspaceInactive: reason == .workspaceInactive,
-                offscreenSide: reason == .layoutTransient ? side : nil
+                reason: hiddenWindowReason(for: reason, side: side, existingState: nil)
             )
         }
 
@@ -1680,9 +1680,27 @@ import QuartzCore
         return WindowModel.HiddenState(
             proportionalPosition: proportionalPosition,
             referenceMonitorId: referenceMonitorId,
-            workspaceInactive: reason == .workspaceInactive,
-            offscreenSide: reason == .layoutTransient ? side : nil
+            reason: hiddenWindowReason(for: reason, side: side, existingState: existingState)
         )
+    }
+
+    private func hiddenWindowReason(
+        for reason: HideReason,
+        side: HideSide,
+        existingState: WindowModel.HiddenState?
+    ) -> WindowModel.HiddenReason {
+        if existingState?.isScratchpad == true, reason != .scratchpad {
+            return .scratchpad
+        }
+
+        switch reason {
+        case .workspaceInactive:
+            return .workspaceInactive
+        case .layoutTransient:
+            return .layoutTransient(side)
+        case .scratchpad:
+            return .scratchpad
+        }
     }
 
     func hideWindow(_ entry: WindowModel.Entry, monitor: Monitor, side: HideSide, reason: HideReason) {
@@ -1730,10 +1748,26 @@ import QuartzCore
 
     func unhideWindow(_ entry: WindowModel.Entry, monitor: Monitor) {
         guard let controller else { return }
-        if let hiddenState = controller.workspaceManager.hiddenState(for: entry.token),
-           hiddenState.workspaceInactive {
-            restoreWindowFromHiddenState(entry, monitor: monitor, hiddenState: hiddenState)
+        guard let hiddenState = controller.workspaceManager.hiddenState(for: entry.token) else {
+            controller.axManager.unsuppressFrameWrites([(entry.handle.pid, entry.windowId)])
+            return
         }
+        guard hiddenState.workspaceInactive else { return }
+
+        restoreWindowFromHiddenState(entry, monitor: monitor, hiddenState: hiddenState)
+        controller.workspaceManager.setHiddenState(nil, for: entry.token)
+        controller.axManager.unsuppressFrameWrites([(entry.handle.pid, entry.windowId)])
+    }
+
+    func restoreScratchpadWindow(_ entry: WindowModel.Entry, monitor: Monitor) {
+        guard let controller,
+              let hiddenState = controller.workspaceManager.hiddenState(for: entry.token),
+              hiddenState.isScratchpad
+        else {
+            return
+        }
+
+        restoreWindowFromHiddenState(entry, monitor: monitor, hiddenState: hiddenState)
         controller.workspaceManager.setHiddenState(nil, for: entry.token)
         controller.axManager.unsuppressFrameWrites([(entry.handle.pid, entry.windowId)])
     }
@@ -1787,11 +1821,29 @@ import QuartzCore
         return preferredSides
     }
 
+    func preferredHideSide(for monitor: Monitor) -> HideSide {
+        guard let controller else { return .right }
+        return preferredHideSides(for: controller.workspaceManager.monitors)[monitor.id] ?? .right
+    }
+
     private func restoreWindowFromHiddenState(
         _ entry: WindowModel.Entry,
         monitor: Monitor,
         hiddenState: WindowModel.HiddenState
     ) {
+        if entry.mode == .floating,
+           hiddenState.restoresViaFloatingState,
+           let controller,
+           let frame = controller.workspaceManager.resolvedFloatingFrame(
+               for: entry.token,
+               preferredMonitor: monitor
+           )
+        {
+            controller.axManager.forceApplyNextFrame(for: entry.windowId)
+            controller.axManager.applyFramesParallel([(entry.pid, entry.windowId, frame)])
+            return
+        }
+
         if let plan = makeRestorePositionPlan(
             for: entry,
             monitor: monitor,
@@ -1890,7 +1942,7 @@ import QuartzCore
         updateEngine: (WindowToken, WindowSizeConstraints) -> Void
     ) {
         guard let controller else { return }
-        let snapshots = buildWindowSnapshots(for: controller.workspaceManager.entries(in: wsId))
+        let snapshots = buildWindowSnapshots(for: controller.workspaceManager.tiledEntries(in: wsId))
         for snapshot in snapshots {
             updateEngine(snapshot.token, snapshot.constraints)
         }

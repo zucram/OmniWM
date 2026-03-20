@@ -3,7 +3,13 @@ import Foundation
 
 @MainActor
 final class WindowActionHandler {
+    struct FloatingWindowRaisePlan {
+        let orderedEntries: [WindowModel.Entry]
+        let batches: [[WindowModel.Entry]]
+    }
+
     weak var controller: WMController?
+    private let orderWindow: (UInt32) -> Void
 
     @ObservationIgnored
     private lazy var overviewController: OverviewController = {
@@ -18,8 +24,14 @@ final class WindowActionHandler {
         return oc
     }()
 
-    init(controller: WMController) {
+    init(
+        controller: WMController,
+        orderWindow: @escaping (UInt32) -> Void = {
+            SkyLight.shared.orderWindow($0, relativeTo: 0, order: .above)
+        }
+    ) {
         self.controller = controller
+        self.orderWindow = orderWindow
     }
 
     func openMenuAnywhere() {
@@ -60,69 +72,91 @@ final class WindowActionHandler {
 
     func raiseAllFloatingWindows() {
         guard let controller else { return }
-        guard let monitor = controller.monitorForInteraction() else { return }
-
-        let allWindows = SkyLight.shared.queryAllVisibleWindows()
-
-        let windowsOnMonitor = allWindows.filter { info in
-            let center = ScreenCoordinateSpace.toAppKit(rect: info.frame).center
-            return monitor.visibleFrame.contains(center)
+        guard !controller.isLockScreenActive else { return }
+        if controller.hasStartedServices {
+            guard !controller.isFrontmostAppLockScreen() else { return }
         }
 
-        let windowsByPid = Dictionary(grouping: windowsOnMonitor) { $0.pid }
-        let windowIdSet = Set(windowsOnMonitor.map(\.id))
+        guard let plan = makeRaiseAllFloatingPlan() else { return }
 
-        var lastRaisedPid: pid_t?
-        var lastRaisedWindowId: UInt32?
-        var ownAppHasFloatingWindows = false
-        let ownPid = ProcessInfo.processInfo.processIdentifier
+        for batch in plan.batches {
+            for entry in batch {
+                orderWindow(UInt32(entry.windowId))
+            }
+            guard let anchor = batch.last else { continue }
+            controller.performWindowFronting(
+                pid: anchor.pid,
+                windowId: anchor.windowId,
+                axRef: anchor.axRef
+            )
+        }
+    }
 
-        for (pid, _) in windowsByPid {
-            guard let appInfo = controller.appInfoCache.info(for: pid),
-                  appInfo.activationPolicy != .prohibited else { continue }
+    func makeRaiseAllFloatingPlan() -> FloatingWindowRaisePlan? {
+        guard let controller else { return nil }
 
-            let axApp = AXUIElementCreateApplication(pid)
-            var windowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let windows = windowsRef as? [AXUIElement] else { continue }
+        let floatingEntries = controller.workspaceManager.visibleWorkspaceIds()
+            .flatMap { workspaceId in
+                controller.workspaceManager.floatingEntries(in: workspaceId)
+            }
+            .filter { entry in
+                entry.layoutReason == .standard && !controller.workspaceManager.isHiddenInCorner(entry.token)
+            }
+        guard !floatingEntries.isEmpty else { return nil }
 
-            for window in windows {
-                guard let axRef = try? AXWindowRef(element: window),
-                      windowIdSet.contains(UInt32(axRef.windowId)) else { continue }
-                let windowId = axRef.windowId
+        let candidateTokens = Set(floatingEntries.map(\.token))
+        let interactionWorkspaceId = controller.activeWorkspace()?.id
+        let preferredFocusToken: WindowToken? = {
+            if let focusedToken = controller.workspaceManager.focusedToken,
+               candidateTokens.contains(focusedToken)
+            {
+                return focusedToken
+            }
 
-                let decision = controller.decideWindowDisposition(
-                    axRef: axRef,
-                    pid: pid
-                )
-                guard decision.disposition == WindowDecisionDisposition.floating else { continue }
+            guard let interactionWorkspaceId else { return nil }
+            let lastFloatingFocusedToken = controller.workspaceManager.lastFloatingFocusedToken(
+                in: interactionWorkspaceId
+            )
+            guard let lastFloatingFocusedToken, candidateTokens.contains(lastFloatingFocusedToken) else {
+                return nil
+            }
+            return lastFloatingFocusedToken
+        }()
 
-                SkyLight.shared.orderWindow(UInt32(windowId), relativeTo: 0, order: .above)
-
-                if pid == ownPid {
-                    ownAppHasFloatingWindows = true
-                } else {
-                    lastRaisedPid = pid
-                    lastRaisedWindowId = UInt32(windowId)
+        let orderedEntries = floatingEntries.sorted { lhs, rhs in
+            switch (lhs.token == preferredFocusToken, rhs.token == preferredFocusToken) {
+            case (true, false):
+                return false
+            case (false, true):
+                return true
+            default:
+                if lhs.pid != rhs.pid {
+                    return lhs.pid < rhs.pid
                 }
+                return lhs.windowId < rhs.windowId
             }
         }
 
-        if let pid = lastRaisedPid,
-           let windowId = lastRaisedWindowId,
-           let app = NSRunningApplication(processIdentifier: pid)
+        var entriesByPid: [pid_t: [WindowModel.Entry]] = [:]
+        var pidOrder: [pid_t] = []
+
+        for entry in orderedEntries {
+            if entriesByPid[entry.pid] == nil {
+                pidOrder.append(entry.pid)
+                entriesByPid[entry.pid] = []
+            }
+            entriesByPid[entry.pid, default: []].append(entry)
+        }
+
+        if let focusPid = orderedEntries.last?.pid,
+           let focusIndex = pidOrder.firstIndex(of: focusPid)
         {
-            app.activate()
-            var psn = ProcessSerialNumber()
-            if GetProcessForPID(app.processIdentifier, &psn) == noErr {
-                _ = _SLPSSetFrontProcessWithOptions(&psn, windowId, kCPSUserGenerated)
-                makeKeyWindow(psn: &psn, windowId: windowId)
-            }
+            let focusPid = pidOrder.remove(at: focusIndex)
+            pidOrder.append(focusPid)
         }
 
-        if ownAppHasFloatingWindows {
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        let batches = pidOrder.compactMap { entriesByPid[$0] }
+        return FloatingWindowRaisePlan(orderedEntries: orderedEntries, batches: batches)
     }
 
     func navigateToWindow(handle: WindowHandle) {
