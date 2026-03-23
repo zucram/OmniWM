@@ -74,7 +74,8 @@ struct HotkeyBinding: Codable, Equatable, Identifiable {
             .workspace
         case .focus, .focusColumn, .focusColumnFirst, .focusColumnLast,
              .focusDownOrLeft, .focusPrevious, .focusUpOrRight,
-             .openCommandPalette, .openMenuAnywhere, .toggleHiddenBar, .toggleQuakeTerminal,
+             .openCommandPalette, .openMenuAnywhere, .toggleWorkspaceBarVisibility,
+             .toggleHiddenBar, .toggleQuakeTerminal,
              .toggleOverview:
             .focus
         case .move:
@@ -83,6 +84,7 @@ struct HotkeyBinding: Codable, Equatable, Identifiable {
              .swapWorkspaceWithMonitor, .moveWindowToWorkspaceOnMonitor:
             .monitor
         case .balanceSizes, .moveToRoot, .raiseAllFloatingWindows, .toggleFocusedWindowFloating,
+             .assignFocusedWindowToScratchpad, .toggleScratchpadWindow,
              .toggleFullscreen, .toggleNativeFullscreen,
              .toggleSplit, .swapSplit, .resizeInDirection, .preselect, .preselectClear, .toggleWorkspaceLayout:
             .layout

@@ -68,6 +68,8 @@ final class WMController {
     @ObservationIgnored
     private var pendingWorkspaceBarRefreshGeneration: UInt64?
     @ObservationIgnored
+    private var hiddenWorkspaceBarMonitorIds: Set<Monitor.ID> = []
+    @ObservationIgnored
     private let hiddenBarController: HiddenBarController
     @ObservationIgnored
     private lazy var quakeTerminalController: QuakeTerminalController = .init(settings: settings)
@@ -125,8 +127,12 @@ final class WMController {
         hotkeys.onCommand = { [weak self] command in
             self?.commandHandler.handleCommand(command)
         }
-        tabbedOverlayManager.onSelect = { [weak self] workspaceId, columnId, index in
-            self?.layoutRefreshController.selectTabInNiri(workspaceId: workspaceId, columnId: columnId, index: index)
+        tabbedOverlayManager.onSelect = { [weak self] workspaceId, columnId, visualIndex in
+            self?.layoutRefreshController.selectTabInNiri(
+                workspaceId: workspaceId,
+                columnId: columnId,
+                visualIndex: visualIndex
+            )
         }
         workspaceManager.onSessionStateChanged = { [weak self] in
             self?.focusNotificationDispatcher.notifyFocusChangesIfNeeded()
@@ -134,7 +140,7 @@ final class WMController {
     }
 
     func applyPersistedSettings(_ settings: SettingsStore) {
-        settings.appearanceMode.apply()
+        applyCurrentAppearanceMode()
 
         updateHotkeyBindings(settings.hotkeyBindings)
         setHotkeysEnabled(settings.hotkeysEnabled)
@@ -194,6 +200,11 @@ final class WMController {
         setEnabled(true)
     }
 
+    func applyCurrentAppearanceMode() {
+        settings.appearanceMode.apply()
+        workspaceBarManager.updateSettings()
+    }
+
     func setEnabled(_ enabled: Bool) {
         isEnabled = enabled
         if enabled {
@@ -228,8 +239,10 @@ final class WMController {
         if settings.workspaceBarEnabled != enabled {
             settings.workspaceBarEnabled = enabled
         }
+        pruneHiddenWorkspaceBarMonitorIds()
         cancelPendingWorkspaceBarRefresh()
         workspaceBarManager.setup(controller: self, settings: settings)
+        layoutRefreshController.requestRelayout(reason: .monitorSettingsChanged)
     }
 
     func cleanupUIOnStop() {
@@ -247,6 +260,26 @@ final class WMController {
 
     func toggleHiddenBar() {
         hiddenBarController.toggle()
+    }
+
+    @discardableResult
+    func toggleWorkspaceBarVisibility() -> Bool {
+        pruneHiddenWorkspaceBarMonitorIds()
+
+        guard let monitor = monitorForInteraction() else { return false }
+        let resolved = settings.resolvedBarSettings(for: monitor)
+        guard resolved.enabled else { return false }
+
+        if hiddenWorkspaceBarMonitorIds.contains(monitor.id) {
+            hiddenWorkspaceBarMonitorIds.remove(monitor.id)
+        } else {
+            hiddenWorkspaceBarMonitorIds.insert(monitor.id)
+        }
+
+        cancelPendingWorkspaceBarRefresh()
+        workspaceBarManager.setup(controller: self, settings: settings)
+        layoutRefreshController.requestRelayout(reason: .monitorSettingsChanged)
+        return true
     }
 
     func setQuakeTerminalEnabled(_ enabled: Bool) {
@@ -304,7 +337,10 @@ final class WMController {
     }
 
     func updateWorkspaceBarSettings() {
+        pruneHiddenWorkspaceBarMonitorIds()
+        cancelPendingWorkspaceBarRefresh()
         workspaceBarManager.updateSettings()
+        layoutRefreshController.requestRelayout(reason: .monitorSettingsChanged)
     }
 
     func updateMonitorOrientations() {
@@ -398,15 +434,21 @@ final class WMController {
 
     func insetWorkingFrame(for monitor: Monitor) -> CGRect {
         let scale = NSScreen.screens.first(where: { $0.displayId == monitor.displayId })?.backingScaleFactor ?? 2.0
-        return insetWorkingFrame(from: monitor.visibleFrame, scale: scale)
+        let resolved = settings.resolvedBarSettings(for: monitor)
+        let reservedTopInset = WorkspaceBarGeometry.resolve(
+            monitor: monitor,
+            resolved: resolved,
+            isVisible: isWorkspaceBarVisible(on: monitor, resolved: resolved)
+        ).reservedTopInset
+        return insetWorkingFrame(from: monitor.visibleFrame, scale: scale, reservedTopInset: reservedTopInset)
     }
 
-    func insetWorkingFrame(from frame: CGRect, scale: CGFloat = 2.0) -> CGRect {
+    func insetWorkingFrame(from frame: CGRect, scale: CGFloat = 2.0, reservedTopInset: CGFloat = 0) -> CGRect {
         let outer = workspaceManager.outerGaps
         let struts = Struts(
             left: outer.left,
             right: outer.right,
-            top: outer.top,
+            top: outer.top + reservedTopInset,
             bottom: outer.bottom
         )
         return computeWorkingArea(
@@ -474,6 +516,18 @@ final class WMController {
         workspaceBarRefreshDebugState.isQueued = false
     }
 
+    func isWorkspaceBarVisible(on monitor: Monitor, resolved: ResolvedBarSettings? = nil) -> Bool {
+        let effective = resolved ?? settings.resolvedBarSettings(for: monitor)
+        return effective.enabled && !hiddenWorkspaceBarMonitorIds.contains(monitor.id)
+    }
+
+    private func pruneHiddenWorkspaceBarMonitorIds() {
+        hiddenWorkspaceBarMonitorIds = hiddenWorkspaceBarMonitorIds.filter { monitorId in
+            guard let monitor = workspaceManager.monitor(byId: monitorId) else { return false }
+            return settings.resolvedBarSettings(for: monitor).enabled
+        }
+    }
+
     func waitForWorkspaceBarRefreshForTests() async {
         for _ in 0..<100 {
             await Task.yield()
@@ -488,6 +542,19 @@ final class WMController {
         cancelPendingWorkspaceBarRefresh()
         workspaceBarRefreshDebugState = .init()
         workspaceBarRefreshExecutionHookForTests = nil
+    }
+
+    func activeWorkspaceBarCountForTests() -> Int {
+        workspaceBarManager.activeBarCountForTests()
+    }
+
+    func isWorkspaceBarRuntimeHiddenForTests(on monitorId: Monitor.ID) -> Bool {
+        hiddenWorkspaceBarMonitorIds.contains(monitorId)
+    }
+
+    func configureWorkspaceBarManagerForTests(monitors: [Monitor]) {
+        workspaceBarManager.monitorProvider = { monitors }
+        workspaceBarManager.screenProvider = { _ in nil }
     }
 
     func enableNiriLayout(
@@ -625,35 +692,480 @@ final class WMController {
         }
     }
 
+    private func evaluateSizeConstraints(
+        for token: WindowToken,
+        axRef: AXWindowRef
+    ) -> WindowSizeConstraints {
+        if let cached = workspaceManager.cachedConstraints(for: token) {
+            return cached
+        }
+
+        let currentSize = AXWindowService.framePreferFast(axRef)?.size
+            ?? axManager.lastAppliedFrame(for: token.windowId)?.size
+        let resolved = AXWindowService.sizeConstraints(axRef, currentSize: currentSize)
+        workspaceManager.setCachedConstraints(resolved, for: token)
+        return resolved
+    }
+
+    private func decisionApplyingManualOverride(
+        _ decision: WindowDecision,
+        manualOverride: ManualWindowOverride?
+    ) -> WindowDecision {
+        guard let manualOverride, decision.disposition != .unmanaged else {
+            return decision
+        }
+
+        return WindowDecision(
+            disposition: manualOverride == .forceTile ? .managed : .floating,
+            source: .manualOverride,
+            workspaceName: decision.workspaceName,
+            ruleEffects: decision.ruleEffects,
+            heuristicReasons: []
+        )
+    }
+
+    private func liveFrame(for entry: WindowModel.Entry) -> CGRect? {
+        AXWindowService.framePreferFast(entry.axRef)
+            ?? axManager.lastAppliedFrame(for: entry.windowId)
+            ?? (try? AXWindowService.frame(entry.axRef))
+    }
+
+    private func floatingPlacementMonitor(
+        for entry: WindowModel.Entry,
+        preferredMonitor: Monitor? = nil,
+        frame: CGRect? = nil
+    ) -> Monitor? {
+        if let preferredMonitor {
+            return preferredMonitor
+        }
+        if let interactionMonitor = monitorForInteraction() {
+            return interactionMonitor
+        }
+        if let workspaceMonitor = workspaceManager.monitor(for: entry.workspaceId) {
+            return workspaceMonitor
+        }
+        if let frame,
+           let approximatedMonitor = frame.center.monitorApproximation(in: workspaceManager.monitors)
+        {
+            return approximatedMonitor
+        }
+        return workspaceManager.monitors.first
+    }
+
+    private func clampedFloatingFrame(
+        _ frame: CGRect,
+        in visibleFrame: CGRect
+    ) -> CGRect {
+        let maxX = visibleFrame.maxX - frame.width
+        let maxY = visibleFrame.maxY - frame.height
+        let clampedX = min(max(frame.origin.x, visibleFrame.minX), max(maxX, visibleFrame.minX))
+        let clampedY = min(max(frame.origin.y, visibleFrame.minY), max(maxY, visibleFrame.minY))
+        return CGRect(origin: CGPoint(x: clampedX, y: clampedY), size: frame.size)
+    }
+
+    private func initialFloatingFrame(
+        for entry: WindowModel.Entry,
+        preferredMonitor: Monitor?
+    ) -> CGRect? {
+        guard let frame = liveFrame(for: entry) else { return nil }
+        let offsetFrame = frame.offsetBy(dx: 50, dy: 50)
+        guard let monitor = floatingPlacementMonitor(
+            for: entry,
+            preferredMonitor: preferredMonitor,
+            frame: frame
+        ) else {
+            return offsetFrame
+        }
+        return clampedFloatingFrame(offsetFrame, in: monitor.visibleFrame)
+    }
+
+    private func targetFloatingFrame(
+        for entry: WindowModel.Entry,
+        preferredMonitor: Monitor?
+    ) -> CGRect? {
+        if let floatingState = workspaceManager.floatingState(for: entry.token),
+           floatingState.restoreToFloating,
+           let restoredFrame = workspaceManager.resolvedFloatingFrame(
+               for: entry.token,
+               preferredMonitor: preferredMonitor
+           )
+        {
+            return restoredFrame
+        }
+        return initialFloatingFrame(for: entry, preferredMonitor: preferredMonitor)
+    }
+
+    private func shouldApplyFloatingFrameImmediately(
+        for workspaceId: WorkspaceDescriptor.ID
+    ) -> Bool {
+        guard let monitor = workspaceManager.monitor(for: workspaceId) else { return false }
+        return workspaceManager.activeWorkspace(on: monitor.id)?.id == workspaceId
+    }
+
+    func seedFloatingGeometryIfNeeded(
+        for token: WindowToken,
+        preferredMonitor: Monitor? = nil
+    ) {
+        guard workspaceManager.floatingState(for: token) == nil,
+              let entry = workspaceManager.entry(for: token),
+              let frame = liveFrame(for: entry)
+        else {
+            return
+        }
+
+        let referenceMonitor = floatingPlacementMonitor(
+            for: entry,
+            preferredMonitor: preferredMonitor,
+            frame: frame
+        )
+        workspaceManager.updateFloatingGeometry(
+            frame: frame,
+            for: token,
+            referenceMonitor: referenceMonitor,
+            restoreToFloating: true
+        )
+    }
+
+    private func focusedManagedTokenForCommand() -> WindowToken? {
+        let focusedToken = workspaceManager.focusedToken
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let token = focusedToken ?? frontmostPid.flatMap { axEventHandler.focusedWindowToken(for: $0) }
+        guard let token, workspaceManager.entry(for: token) != nil else {
+            return nil
+        }
+        return token
+    }
+
+    @discardableResult
+    private func captureVisibleFloatingGeometry(
+        for token: WindowToken,
+        preferredMonitor: Monitor? = nil
+    ) -> CGRect? {
+        guard !workspaceManager.isHiddenInCorner(token),
+              let entry = workspaceManager.entry(for: token),
+              let frame = liveFrame(for: entry)
+        else {
+            return nil
+        }
+
+        let referenceMonitor = floatingPlacementMonitor(
+            for: entry,
+            preferredMonitor: preferredMonitor,
+            frame: frame
+        )
+        workspaceManager.updateFloatingGeometry(
+            frame: frame,
+            for: token,
+            referenceMonitor: referenceMonitor,
+            restoreToFloating: true
+        )
+        return frame
+    }
+
+    @discardableResult
+    private func prepareWindowForScratchpadAssignment(
+        _ token: WindowToken,
+        preferredMonitor: Monitor? = nil
+    ) -> Bool {
+        guard let entry = workspaceManager.entry(for: token) else { return false }
+        if workspaceManager.manualLayoutOverride(for: token) != .forceFloat {
+            workspaceManager.setManualLayoutOverride(.forceFloat, for: token)
+        }
+
+        if entry.mode == .floating {
+            return captureVisibleFloatingGeometry(for: token, preferredMonitor: preferredMonitor) != nil
+                || workspaceManager.floatingState(for: token) != nil
+        }
+
+        guard let frame = liveFrame(for: entry) else { return false }
+        let referenceMonitor = floatingPlacementMonitor(
+            for: entry,
+            preferredMonitor: preferredMonitor,
+            frame: frame
+        )
+        _ = workspaceManager.setWindowMode(.floating, for: token)
+        workspaceManager.updateFloatingGeometry(
+            frame: frame,
+            for: token,
+            referenceMonitor: referenceMonitor,
+            restoreToFloating: true
+        )
+        return true
+    }
+
+    private func currentScratchpadTarget() -> (workspaceId: WorkspaceDescriptor.ID, monitor: Monitor)? {
+        guard let monitor = monitorForInteraction(),
+              let workspaceId = workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
+        else {
+            return nil
+        }
+        return (workspaceId, monitor)
+    }
+
+    private func visibleFocusRecoveryToken(
+        in workspaceId: WorkspaceDescriptor.ID,
+        excluding excludedToken: WindowToken
+    ) -> WindowToken? {
+        let explicitCandidates = [
+            workspaceManager.lastFocusedToken(in: workspaceId),
+            workspaceManager.preferredFocusToken(in: workspaceId),
+            workspaceManager.lastFloatingFocusedToken(in: workspaceId),
+            workspaceManager.focusedToken
+        ]
+
+        for candidate in explicitCandidates {
+            guard let candidate,
+                  candidate != excludedToken,
+                  let entry = workspaceManager.entry(for: candidate),
+                  entry.workspaceId == workspaceId,
+                  isManagedWindowDisplayable(entry.handle)
+            else {
+                continue
+            }
+            return candidate
+        }
+
+        if let tiledEntry = workspaceManager.tiledEntries(in: workspaceId).first(where: {
+            $0.token != excludedToken && isManagedWindowDisplayable($0.handle)
+        }) {
+            return tiledEntry.token
+        }
+
+        return workspaceManager.floatingEntries(in: workspaceId).first(where: {
+            $0.token != excludedToken && isManagedWindowDisplayable($0.handle)
+        })?.token
+    }
+
+    private func recoverFocusAfterScratchpadHide(
+        in workspaceId: WorkspaceDescriptor.ID,
+        excluding token: WindowToken,
+        on monitorId: Monitor.ID?
+    ) {
+        if let nextFocusToken = visibleFocusRecoveryToken(in: workspaceId, excluding: token) {
+            focusWindow(nextFocusToken)
+            return
+        }
+
+        _ = workspaceManager.resolveAndSetWorkspaceFocusToken(in: workspaceId, onMonitor: monitorId)
+        if workspaceManager.focusedToken == nil {
+            borderManager.hideBorder()
+        }
+    }
+
+    private func hideScratchpadWindow(
+        _ entry: WindowModel.Entry,
+        monitor: Monitor
+    ) {
+        let preferredSide = layoutRefreshController.preferredHideSide(for: monitor)
+        layoutRefreshController.hideWindow(
+            entry,
+            monitor: monitor,
+            side: preferredSide,
+            reason: .scratchpad
+        )
+        recoverFocusAfterScratchpadHide(
+            in: entry.workspaceId,
+            excluding: entry.token,
+            on: monitor.id
+        )
+    }
+
+    private func showScratchpadWindow(
+        _ entry: WindowModel.Entry,
+        on workspaceId: WorkspaceDescriptor.ID,
+        monitor: Monitor
+    ) {
+        if entry.workspaceId != workspaceId {
+            workspaceManager.setWorkspace(for: entry.token, to: workspaceId)
+        }
+        axManager.markWindowActive(entry.windowId)
+
+        if let hiddenState = workspaceManager.hiddenState(for: entry.token) {
+            if hiddenState.isScratchpad {
+                layoutRefreshController.restoreScratchpadWindow(entry, monitor: monitor)
+            } else {
+                layoutRefreshController.unhideWindow(entry, monitor: monitor)
+            }
+        } else if let frame = workspaceManager.resolvedFloatingFrame(
+            for: entry.token,
+            preferredMonitor: monitor
+        ) {
+            axManager.forceApplyNextFrame(for: entry.windowId)
+            axManager.applyFramesParallel([(entry.pid, entry.windowId, frame)])
+        }
+
+        focusWindow(entry.token)
+    }
+
+    @discardableResult
+    func transitionWindowMode(
+        for token: WindowToken,
+        to targetMode: TrackedWindowMode,
+        preferredMonitor: Monitor? = nil,
+        applyFloatingFrame: Bool? = nil
+    ) -> Bool {
+        guard let entry = workspaceManager.entry(for: token) else { return false }
+        let currentMode = entry.mode
+        guard currentMode != targetMode else { return false }
+
+        let currentFrame = liveFrame(for: entry)
+        let referenceMonitor = floatingPlacementMonitor(
+            for: entry,
+            preferredMonitor: preferredMonitor,
+            frame: currentFrame
+        )
+
+        switch (currentMode, targetMode) {
+        case (.tiling, .floating):
+            let targetFrame = targetFloatingFrame(
+                for: entry,
+                preferredMonitor: referenceMonitor
+            )
+            _ = workspaceManager.setWindowMode(.floating, for: token)
+            if let targetFrame {
+                workspaceManager.updateFloatingGeometry(
+                    frame: targetFrame,
+                    for: token,
+                    referenceMonitor: referenceMonitor,
+                    restoreToFloating: true
+                )
+                if applyFloatingFrame ?? shouldApplyFloatingFrameImmediately(for: entry.workspaceId) {
+                    axManager.forceApplyNextFrame(for: entry.windowId)
+                    axManager.applyFramesParallel([(entry.pid, entry.windowId, targetFrame)])
+                    borderCoordinator.updateBorderIfAllowed(
+                        token: token,
+                        frame: targetFrame,
+                        windowId: entry.windowId
+                    )
+                }
+            }
+            return true
+
+        case (.floating, .tiling):
+            if let currentFrame {
+                workspaceManager.updateFloatingGeometry(
+                    frame: currentFrame,
+                    for: token,
+                    referenceMonitor: referenceMonitor,
+                    restoreToFloating: true
+                )
+            } else if var floatingState = workspaceManager.floatingState(for: token) {
+                floatingState.restoreToFloating = true
+                workspaceManager.setFloatingState(floatingState, for: token)
+            }
+            _ = workspaceManager.setWindowMode(.tiling, for: token)
+            return true
+
+        case (.tiling, .tiling), (.floating, .floating):
+            return false
+        }
+    }
+
+    func trackedModeForLifecycle(
+        decision: WindowDecision,
+        existingEntry: WindowModel.Entry?
+    ) -> TrackedWindowMode? {
+        if let trackedMode = decision.trackedMode {
+            return trackedMode
+        }
+        if decision.disposition == .undecided {
+            return existingEntry?.mode
+        }
+        return nil
+    }
+
+    func resolvedWorkspaceId(
+        for evaluation: WindowDecisionEvaluation,
+        axRef: AXWindowRef,
+        pid: pid_t,
+        existingEntry: WindowModel.Entry?,
+        fallbackWorkspaceId: WorkspaceDescriptor.ID?
+    ) -> WorkspaceDescriptor.ID {
+        if let workspaceName = evaluation.decision.workspaceName,
+           let workspaceId = workspaceManager.workspaceId(for: workspaceName, createIfMissing: false)
+        {
+            return workspaceId
+        }
+
+        if let existingEntry {
+            return existingEntry.workspaceId
+        }
+
+        return resolveWorkspaceForNewWindow(
+            workspaceName: evaluation.decision.workspaceName,
+            axRef: axRef,
+            pid: pid,
+            fallbackWorkspaceId: fallbackWorkspaceId
+        )
+    }
+
     func evaluateWindowDisposition(
         axRef: AXWindowRef,
         pid: pid_t,
-        appFullscreen: Bool? = nil
+        appFullscreen: Bool? = nil,
+        applyingManualOverride: Bool = true,
+        windowInfo: WindowServerInfo? = nil
     ) -> WindowDecisionEvaluation {
+        let token = WindowToken(pid: pid, windowId: axRef.windowId)
+        let sizeConstraints = evaluateSizeConstraints(for: token, axRef: axRef)
         let appInfo = resolvedAppInfo(for: pid)
-        let facts = axEventHandler.windowFactsProvider?(axRef, pid) ?? WindowRuleFacts(
+        let baseFacts = axEventHandler.windowFactsProvider?(axRef, pid) ?? WindowRuleFacts(
             appName: appInfo?.name,
             ax: AXWindowService.collectWindowFacts(
                 axRef,
                 appPolicy: appInfo?.activationPolicy,
                 bundleId: appInfo?.bundleId,
                 includeTitle: windowRuleEngine.requiresTitle(for: appInfo?.bundleId)
-            )
+            ),
+            sizeConstraints: sizeConstraints,
+            windowServer: nil
+        )
+        let resolvedWindowInfo = baseFacts.windowServer ?? resolveWindowServerInfoForDisposition(
+            token: token,
+            bundleId: baseFacts.ax.bundleId ?? appInfo?.bundleId,
+            preferredWindowInfo: windowInfo
+        )
+        let facts = WindowRuleFacts(
+            appName: baseFacts.appName,
+            ax: baseFacts.ax,
+            sizeConstraints: baseFacts.sizeConstraints,
+            windowServer: resolvedWindowInfo
         )
         let fullscreen = appFullscreen ?? (axEventHandler.isFullscreenProvider?(axRef) ?? AXWindowService.isFullscreen(axRef))
-        let token = WindowToken(pid: pid, windowId: axRef.windowId)
-        let decision = windowRuleEngine.decision(
+        let manualOverride = workspaceManager.manualLayoutOverride(for: token)
+        let baseDecision = windowRuleEngine.decision(
             for: facts,
             token: token,
             appFullscreen: fullscreen
         )
+        let decision = applyingManualOverride
+            ? decisionApplyingManualOverride(baseDecision, manualOverride: manualOverride)
+            : baseDecision
         return WindowDecisionEvaluation(
             token: token,
             facts: facts,
             decision: decision,
             appFullscreen: fullscreen,
-            manualOverride: windowRuleEngine.manualOverride(for: token)
+            manualOverride: manualOverride
         )
+    }
+
+    private func resolveWindowServerInfoForDisposition(
+        token: WindowToken,
+        bundleId: String?,
+        preferredWindowInfo: WindowServerInfo?
+    ) -> WindowServerInfo? {
+        if let preferredWindowInfo {
+            return preferredWindowInfo
+        }
+
+        guard bundleId == WindowRuleEngine.cleanShotBundleId,
+              let windowId = UInt32(exactly: token.windowId)
+        else {
+            return nil
+        }
+
+        return axEventHandler.windowInfoProvider?(windowId) ?? SkyLight.shared.queryWindowInfo(windowId)
     }
 
     func decideWindowDisposition(
@@ -714,7 +1226,7 @@ final class WMController {
     }
 
     func clearManualWindowOverride(for token: WindowToken) {
-        windowRuleEngine.clearManualOverride(for: token)
+        workspaceManager.setManualLayoutOverride(nil, for: token)
     }
 
     private func resolveAXWindowRef(for token: WindowToken) -> AXWindowRef? {
@@ -773,42 +1285,55 @@ final class WMController {
 
             let evaluation = evaluateWindowDisposition(axRef: axRef, pid: token.pid)
 
-            if let existingEntry, !evaluation.decision.isResolved {
-                _ = workspaceManager.addWindow(
-                    axRef,
-                    pid: token.pid,
-                    windowId: token.windowId,
-                    to: existingEntry.workspaceId,
-                    ruleEffects: existingEntry.ruleEffects
-                )
-                continue
-            }
-
-            if evaluation.decision.managesWindow {
-                let oldEffects = existingEntry?.ruleEffects ?? .none
-                let workspaceId = existingEntry?.workspaceId ?? resolveWorkspaceForNewWindow(
-                    workspaceName: evaluation.decision.workspaceName,
-                    axRef: axRef,
-                    pid: token.pid,
-                    fallbackWorkspaceId: activeWorkspace()?.id
-                )
-
-                _ = workspaceManager.addWindow(
-                    axRef,
-                    pid: token.pid,
-                    windowId: token.windowId,
-                    to: workspaceId,
-                    ruleEffects: evaluation.decision.ruleEffects
-                )
-
-                if existingEntry == nil || oldEffects != evaluation.decision.ruleEffects {
+            guard let trackedMode = trackedModeForLifecycle(
+                decision: evaluation.decision,
+                existingEntry: existingEntry
+            ) else {
+                if existingEntry != nil {
+                    _ = workspaceManager.removeWindow(pid: token.pid, windowId: token.windowId)
                     relayoutNeeded = true
                 }
                 continue
             }
 
-            if existingEntry != nil {
-                _ = workspaceManager.removeWindow(pid: token.pid, windowId: token.windowId)
+            let oldEffects = existingEntry?.ruleEffects ?? .none
+            let oldMode = existingEntry?.mode
+            let oldWorkspaceId = existingEntry?.workspaceId
+            let workspaceId = resolvedWorkspaceId(
+                for: evaluation,
+                axRef: axRef,
+                pid: token.pid,
+                existingEntry: existingEntry,
+                fallbackWorkspaceId: activeWorkspace()?.id
+            )
+
+            _ = workspaceManager.addWindow(
+                axRef,
+                pid: token.pid,
+                windowId: token.windowId,
+                to: workspaceId,
+                mode: oldMode ?? trackedMode,
+                ruleEffects: evaluation.decision.ruleEffects
+            )
+
+            if let oldMode, oldMode != trackedMode {
+                _ = transitionWindowMode(
+                    for: token,
+                    to: trackedMode,
+                    preferredMonitor: workspaceManager.monitor(for: workspaceId)
+                )
+            } else if trackedMode == .floating {
+                seedFloatingGeometryIfNeeded(
+                    for: token,
+                    preferredMonitor: workspaceManager.monitor(for: workspaceId)
+                )
+            }
+
+            if existingEntry == nil
+                || oldEffects != evaluation.decision.ruleEffects
+                || oldWorkspaceId != workspaceId
+                || oldMode != trackedMode
+            {
                 relayoutNeeded = true
             }
         }
@@ -821,33 +1346,133 @@ final class WMController {
     }
 
     func toggleFocusedWindowFloating() {
-        let managedToken = workspaceManager.focusedToken
-        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        let token = managedToken ?? frontmostPid.flatMap { axEventHandler.focusedWindowToken(for: $0) }
-        guard let token else { return }
-
-        if windowRuleEngine.manualOverride(for: token) != nil {
-            windowRuleEngine.setManualOverride(nil, for: token)
-        } else if let axRef = resolveAXWindowRef(for: token) {
-            let evaluation = evaluateWindowDisposition(axRef: axRef, pid: token.pid)
-            let nextOverride: ManualWindowOverride = evaluation.decision.managesWindow ? .forceFloat : .forceTile
-            windowRuleEngine.setManualOverride(nextOverride, for: token)
-        } else if workspaceManager.entry(for: token) != nil {
-            windowRuleEngine.setManualOverride(.forceFloat, for: token)
-        } else {
+        let token = focusedManagedTokenForCommand()
+        guard let token,
+              let entry = workspaceManager.entry(for: token)
+        else {
             return
         }
 
-        Task { @MainActor [weak self] in
-            _ = await self?.reevaluateWindowRules(for: [.window(token)])
+        let nextOverride: ManualWindowOverride?
+        if workspaceManager.manualLayoutOverride(for: token) != nil {
+            nextOverride = nil
+        } else {
+            nextOverride = entry.mode == .tiling ? .forceFloat : .forceTile
         }
+
+        applyManagedWindowOverride(nextOverride, for: token, entry: entry)
+    }
+
+    func assignFocusedWindowToScratchpad() {
+        guard let token = focusedManagedTokenForCommand(),
+              let entry = workspaceManager.entry(for: token),
+              !isManagedWindowSuspendedForNativeFullscreen(token)
+        else {
+            return
+        }
+
+        if workspaceManager.isScratchpadToken(token) {
+            guard !workspaceManager.isHiddenInCorner(token) else { return }
+            _ = workspaceManager.clearScratchpadIfMatches(token)
+            applyManagedWindowOverride(.forceTile, for: token, entry: entry)
+            return
+        }
+
+        if let existingScratchpadToken = workspaceManager.scratchpadToken() {
+            if workspaceManager.entry(for: existingScratchpadToken) == nil {
+                _ = workspaceManager.clearScratchpadIfMatches(existingScratchpadToken)
+            } else {
+                return
+            }
+        }
+
+        let preferredMonitor = monitorForInteraction() ?? workspaceManager.monitor(for: entry.workspaceId)
+        let transitionedFromTiling = entry.mode == .tiling
+        guard prepareWindowForScratchpadAssignment(token, preferredMonitor: preferredMonitor) else {
+            return
+        }
+
+        _ = workspaceManager.setScratchpadToken(token)
+
+        guard let updatedEntry = workspaceManager.entry(for: token),
+              let hideMonitor = workspaceManager.monitor(for: updatedEntry.workspaceId) ?? preferredMonitor
+        else {
+            return
+        }
+
+        hideScratchpadWindow(updatedEntry, monitor: hideMonitor)
+
+        if transitionedFromTiling {
+            layoutRefreshController.requestImmediateRelayout(reason: .layoutCommand)
+        }
+    }
+
+    private func applyManagedWindowOverride(
+        _ override: ManualWindowOverride?,
+        for token: WindowToken,
+        entry: WindowModel.Entry
+    ) {
+        workspaceManager.setManualLayoutOverride(override, for: token)
+        let evaluation = evaluateWindowDisposition(
+            axRef: entry.axRef,
+            pid: token.pid
+        )
+        guard let trackedMode = trackedModeForLifecycle(
+            decision: evaluation.decision,
+            existingEntry: entry
+        ) else {
+            _ = workspaceManager.removeWindow(pid: token.pid, windowId: token.windowId)
+            layoutRefreshController.requestRelayout(reason: .windowRuleReevaluation)
+            return
+        }
+
+        _ = transitionWindowMode(
+            for: token,
+            to: trackedMode,
+            preferredMonitor: monitorForInteraction(),
+            applyFloatingFrame: true
+        )
+        layoutRefreshController.requestRelayout(reason: .windowRuleReevaluation)
+    }
+
+    func toggleScratchpadWindow() {
+        guard let scratchpadToken = workspaceManager.scratchpadToken() else { return }
+        guard let entry = workspaceManager.entry(for: scratchpadToken) else {
+            _ = workspaceManager.clearScratchpadIfMatches(scratchpadToken)
+            return
+        }
+        guard !isManagedWindowSuspendedForNativeFullscreen(scratchpadToken) else { return }
+        guard let target = currentScratchpadTarget() else { return }
+
+        if let hiddenState = workspaceManager.hiddenState(for: scratchpadToken) {
+            let updatedEntry = workspaceManager.entry(for: scratchpadToken) ?? entry
+            if hiddenState.isScratchpad || hiddenState.workspaceInactive {
+                showScratchpadWindow(updatedEntry, on: target.workspaceId, monitor: target.monitor)
+            }
+            return
+        }
+
+        let hasCapturedGeometry = captureVisibleFloatingGeometry(
+            for: scratchpadToken,
+            preferredMonitor: target.monitor
+        ) != nil || workspaceManager.floatingState(for: scratchpadToken) != nil
+        guard hasCapturedGeometry else { return }
+
+        if entry.workspaceId == target.workspaceId,
+           isManagedWindowDisplayable(entry.handle)
+        {
+            hideScratchpadWindow(entry, monitor: target.monitor)
+            return
+        }
+
+        showScratchpadWindow(entry, on: target.workspaceId, monitor: target.monitor)
     }
 
     func workspaceAssignment(pid: pid_t, windowId: Int) -> WorkspaceDescriptor.ID? {
         workspaceManager.entry(forPid: pid, windowId: windowId)?.workspaceId
     }
 
-    func openCommandPalette() { CommandPaletteController.shared.show(wmController: self) }
+    func openCommandPalette() { CommandPaletteController.shared.toggle(wmController: self) }
     func openMenuAnywhere() { windowActionHandler.openMenuAnywhere() }
     func navigateToCommandPaletteWindow(_ handle: WindowHandle) { windowActionHandler.navigateToWindow(handle: handle) }
     func summonCommandPaletteWindowRight(
@@ -990,8 +1615,22 @@ extension WMController {
         ownedWindowRegistry.hasVisibleWindow
     }
 
+    func isOwnedWindow(windowNumber: Int) -> Bool {
+        ownedWindowRegistry.contains(windowNumber: windowNumber)
+    }
+
     var shouldSuppressManagedFocusRecovery: Bool {
         workspaceManager.isNonManagedFocusActive && hasFrontmostOwnedWindow
+    }
+
+    func performWindowFronting(
+        pid: pid_t,
+        windowId: Int,
+        axRef: AXWindowRef
+    ) {
+        windowFocusOperations.activateApp(pid)
+        windowFocusOperations.focusSpecificWindow(pid, UInt32(windowId), axRef.element)
+        windowFocusOperations.raiseWindow(axRef.element)
     }
 
     func focusWindow(_ token: WindowToken) {
@@ -1017,13 +1656,7 @@ extension WMController {
             token,
             performFocus: {
                 // 1. Activate app first (brings process to front, may pick wrong key window)
-                self.windowFocusOperations.activateApp(pid)
-
-                // 2. Private API sets the SPECIFIC window as key (overrides activate's choice)
-                self.windowFocusOperations.focusSpecificWindow(pid, UInt32(windowId), axRef.element)
-
-                // 3. AX raise ensures the window is visually on top and receives keyboard focus
-                self.windowFocusOperations.raiseWindow(axRef.element)
+                self.performWindowFronting(pid: pid, windowId: windowId, axRef: axRef)
 
                 if moveMouseEnabled {
                     self.moveMouseToWindow(token)

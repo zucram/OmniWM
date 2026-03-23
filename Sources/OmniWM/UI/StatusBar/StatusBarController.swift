@@ -56,7 +56,7 @@ final class StatusBarController: NSObject {
         statusItem?.autosaveName = Self.mainAutosaveName
 
         menuBuilder = StatusBarMenuBuilder(settings: settings, controller: controller)
-        menu = menuBuilder?.buildMenu()
+        rebuildMenu()
 
         hiddenBarController.bind(
             omniButton: button,
@@ -78,6 +78,7 @@ final class StatusBarController: NSObject {
     }
 
     private func showMenu() {
+        rebuildMenu()
         guard let button = statusItem?.button, let menu else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
     }
@@ -120,6 +121,11 @@ final class StatusBarController: NSObject {
         if let menu, let menuBuilder {
             menuBuilder.updateWorkspaces(items, in: menu)
         }
+    }
+
+    func rebuildMenu() {
+        menu = menuBuilder?.buildMenu()
+        refreshWorkspaces()
     }
 
     func cleanup() {

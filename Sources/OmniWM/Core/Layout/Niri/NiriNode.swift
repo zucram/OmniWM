@@ -313,6 +313,8 @@ class NiriContainer: NiriNode {
 
     var savedWidth: ProportionalSize?
 
+    var hasManualSingleWindowWidthOverride: Bool = false
+
     var height: ProportionalSize = .default
 
     var cachedHeight: CGFloat = 0
@@ -499,6 +501,23 @@ class NiriContainer: NiriNode {
         guard !windows.isEmpty else { return nil }
         let idx = activeTileIdx.clamped(to: 0 ... (windows.count - 1))
         return windows[idx]
+    }
+
+    // Storage index 0 is the visual bottom of a column; overlay index 0 is the visual top.
+    func visualTileIndex(forStorageTileIndex storageIndex: Int) -> Int? {
+        let count = windowNodes.count
+        guard storageIndex >= 0, storageIndex < count else { return nil }
+        return count - 1 - storageIndex
+    }
+
+    func storageTileIndex(forVisualTileIndex visualIndex: Int) -> Int? {
+        let count = windowNodes.count
+        guard visualIndex >= 0, visualIndex < count else { return nil }
+        return count - 1 - visualIndex
+    }
+
+    var activeVisualTileIdx: Int {
+        visualTileIndex(forStorageTileIndex: activeTileIdx) ?? 0
     }
 
     func clampActiveTileIdx() {

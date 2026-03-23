@@ -199,7 +199,7 @@ import QuartzCore
     ) -> NiriWorkspaceSnapshot? {
         guard let controller else { return nil }
 
-        let entries = controller.workspaceManager.entries(in: wsId)
+        let entries = controller.workspaceManager.tiledEntries(in: wsId)
         let shouldResolveConstraints = viewportState == nil
         let windows = controller.layoutRefreshController.buildWindowSnapshots(
             for: entries,
@@ -833,9 +833,8 @@ import QuartzCore
                 let windows = column.windowNodes
                 guard !windows.isEmpty else { continue }
 
-                let activeIndex = min(max(0, column.activeTileIdx), windows.count - 1)
-                let activeHandle = windows[activeIndex].handle
-                let activeWindowId = controller.workspaceManager.entry(for: activeHandle)?.windowId
+                guard let activeWindow = column.activeWindow else { continue }
+                let activeWindowId = controller.workspaceManager.entry(for: activeWindow.handle)?.windowId
 
                 infos.append(
                     TabbedColumnOverlayInfo(
@@ -843,7 +842,7 @@ import QuartzCore
                         columnId: column.id,
                         columnFrame: frame,
                         tabCount: windows.count,
-                        activeIndex: activeIndex,
+                        activeVisualIndex: column.activeVisualTileIdx,
                         activeWindowId: activeWindowId
                     )
                 )
@@ -853,17 +852,21 @@ import QuartzCore
         controller.tabbedOverlayManager.updateOverlays(infos)
     }
 
-    func selectTabInNiri(workspaceId: WorkspaceDescriptor.ID, columnId: NodeId, index: Int) {
+    func selectTabInNiri(workspaceId: WorkspaceDescriptor.ID, columnId: NodeId, visualIndex: Int) {
         guard let controller, let engine = controller.niriEngine else { return }
         guard let column = engine.columns(in: workspaceId).first(where: { $0.id == columnId }) else { return }
 
         let windows = column.windowNodes
-        guard windows.indices.contains(index) else { return }
+        guard let storageIndex = column.storageTileIndex(forVisualTileIndex: visualIndex),
+              windows.indices.contains(storageIndex)
+        else {
+            return
+        }
 
-        column.setActiveTileIdx(index)
+        column.setActiveTileIdx(storageIndex)
         engine.updateTabbedColumnVisibility(column: column)
 
-        let target = windows[index]
+        let target = windows[storageIndex]
         var state = controller.workspaceManager.niriViewportState(for: workspaceId)
         if let monitor = controller.workspaceManager.monitor(for: workspaceId) {
             let gap = CGFloat(controller.workspaceManager.gaps)
@@ -911,7 +914,7 @@ import QuartzCore
                     lastNode, in: wsId, state: &state,
                     options: .init(activateWindow: false, ensureVisible: false, layoutRefresh: false, startAnimation: false)
                 )
-            } else if let firstToken = controller.workspaceManager.entries(in: wsId).first?.token,
+            } else if let firstToken = controller.workspaceManager.tiledEntries(in: wsId).first?.token,
                       let firstNode = engine.findNode(for: firstToken)
             {
                 activateNode(
@@ -1038,10 +1041,12 @@ import QuartzCore
         let currentMonitors = controller.workspaceManager.monitors
         engine.updateMonitors(currentMonitors)
 
-        for workspace in controller.workspaceManager.workspaces {
-            guard let monitor = controller.workspaceManager.monitor(for: workspace.id) else { continue }
-            engine.moveWorkspace(workspace.id, to: monitor.id, monitor: monitor)
-        }
+        let workspaceAssignments: [(workspaceId: WorkspaceDescriptor.ID, monitor: Monitor)] =
+            controller.workspaceManager.workspaces.compactMap { workspace in
+                guard let monitor = controller.workspaceManager.monitor(for: workspace.id) else { return nil }
+                return (workspaceId: workspace.id, monitor: monitor)
+            }
+        engine.syncWorkspaceAssignments(workspaceAssignments)
 
         for monitor in currentMonitors {
             if let niriMonitor = engine.monitor(for: monitor.id) {

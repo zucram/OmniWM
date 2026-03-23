@@ -12,6 +12,17 @@ private enum FocusOperationEvent: Equatable {
     case raise
 }
 
+private enum RaiseAllFloatingEvent: Equatable {
+    case order(Int)
+    case activate(pid_t)
+    case focus(pid_t, UInt32)
+    case raise
+}
+
+private final class RaiseAllFloatingRecorder {
+    var events: [RaiseAllFloatingEvent] = []
+}
+
 private func makeFocusTestDefaults() -> UserDefaults {
     let suiteName = "com.omniwm.focus-order.test.\(UUID().uuidString)"
     return UserDefaults(suiteName: suiteName)!
@@ -38,6 +49,58 @@ private func makeFocusTestMonitor(
 
 private func makeFocusTestWindow(windowId: Int = 101) -> AXWindowRef {
     AXWindowRef(element: AXUIElementCreateSystemWide(), windowId: windowId)
+}
+
+@MainActor
+private func makeRaiseAllFloatingOperations(
+    recorder: RaiseAllFloatingRecorder
+) -> WindowFocusOperations {
+    WindowFocusOperations(
+        activateApp: { pid in
+            recorder.events.append(.activate(pid))
+        },
+        focusSpecificWindow: { pid, windowId, _ in
+            recorder.events.append(.focus(pid, windowId))
+        },
+        raiseWindow: { _ in
+            recorder.events.append(.raise)
+        }
+    )
+}
+
+@MainActor
+private func makeRaiseAllFloatingHandler(
+    controller: WMController,
+    recorder: RaiseAllFloatingRecorder
+) -> WindowActionHandler {
+    WindowActionHandler(
+        controller: controller,
+        orderWindow: { windowId in
+            recorder.events.append(.order(Int(windowId)))
+        }
+    )
+}
+
+@MainActor
+@discardableResult
+private func addManagedTestWindow(
+    on controller: WMController,
+    pid: pid_t,
+    windowId: Int,
+    workspaceId: WorkspaceDescriptor.ID,
+    mode: TrackedWindowMode = .tiling
+) -> WindowHandle {
+    let token = controller.workspaceManager.addWindow(
+        makeFocusTestWindow(windowId: windowId),
+        pid: pid,
+        windowId: windowId,
+        to: workspaceId,
+        mode: mode
+    )
+    guard let handle = controller.workspaceManager.handle(for: token) else {
+        fatalError("Expected bridge handle for managed test window")
+    }
+    return handle
 }
 
 @MainActor
@@ -137,6 +200,60 @@ private func waitForFocusRefresh(on controller: WMController) async {
         controller.toggleHiddenBar()
 
         #expect(settings.hiddenBarIsCollapsed == true)
+    }
+
+    @Test @MainActor func toggleWorkspaceBarVisibilityHidesOnlyInteractionMonitorAndPreservesSettings() async {
+        let primaryMonitor = Monitor(
+            id: Monitor.ID(displayId: 31),
+            displayId: 31,
+            frame: CGRect(x: 0, y: 0, width: 1000, height: 800),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1000, height: 772),
+            hasNotch: false,
+            name: "Primary"
+        )
+        let secondaryMonitor = Monitor(
+            id: Monitor.ID(displayId: 32),
+            displayId: 32,
+            frame: CGRect(x: 1000, y: 0, width: 1000, height: 800),
+            visibleFrame: CGRect(x: 1000, y: 0, width: 1000, height: 772),
+            hasNotch: false,
+            name: "Secondary"
+        )
+        let controller = makeLayoutPlanTestController(
+            monitors: [primaryMonitor, secondaryMonitor],
+            workspaceConfigurations: [
+                WorkspaceConfiguration(name: "1", monitorAssignment: .main),
+                WorkspaceConfiguration(name: "2", monitorAssignment: .secondary)
+            ]
+        )
+        controller.configureWorkspaceBarManagerForTests(monitors: [primaryMonitor, secondaryMonitor])
+        controller.settings.workspaceBarPosition = .overlappingMenuBar
+        controller.settings.workspaceBarHeight = 24
+        controller.settings.workspaceBarReserveLayoutSpace = true
+        _ = controller.workspaceManager.setInteractionMonitor(primaryMonitor.id)
+        controller.setWorkspaceBarEnabled(true)
+        defer { controller.cleanupUIOnStop() }
+
+        #expect(controller.activeWorkspaceBarCountForTests() == 2)
+        #expect(controller.insetWorkingFrame(for: primaryMonitor).height == 748)
+        #expect(controller.insetWorkingFrame(for: secondaryMonitor).height == 748)
+
+        #expect(controller.toggleWorkspaceBarVisibility() == true)
+        await waitForFocusRefresh(on: controller)
+
+        #expect(controller.settings.workspaceBarEnabled == true)
+        #expect(controller.isWorkspaceBarRuntimeHiddenForTests(on: primaryMonitor.id) == true)
+        #expect(controller.isWorkspaceBarRuntimeHiddenForTests(on: secondaryMonitor.id) == false)
+        #expect(controller.activeWorkspaceBarCountForTests() == 1)
+        #expect(controller.insetWorkingFrame(for: primaryMonitor) == primaryMonitor.visibleFrame)
+        #expect(controller.insetWorkingFrame(for: secondaryMonitor).height == 748)
+
+        #expect(controller.toggleWorkspaceBarVisibility() == true)
+        await waitForFocusRefresh(on: controller)
+
+        #expect(controller.isWorkspaceBarRuntimeHiddenForTests(on: primaryMonitor.id) == false)
+        #expect(controller.activeWorkspaceBarCountForTests() == 2)
+        #expect(controller.insetWorkingFrame(for: primaryMonitor).height == 748)
     }
 
     @Test @MainActor func focusWindowPerformsActivatePrivateFocusAndRaiseInOrder() {
@@ -667,5 +784,160 @@ private func waitForFocusRefresh(on controller: WMController) async {
         #expect(events.isEmpty)
         #expect(controller.workspaceManager.pendingFocusedHandle == nil)
         #expect(controller.workspaceManager.focusedHandle == nil)
+    }
+
+    @Test @MainActor func raiseAllFloatingWindowsOrdersVisibleFloatingWindowsAcrossMonitors() {
+        let recorder = RaiseAllFloatingRecorder()
+        let fixture = makeTwoMonitorFocusController(
+            windowFocusOperations: makeRaiseAllFloatingOperations(recorder: recorder)
+        )
+        let primaryHandle = addManagedTestWindow(
+            on: fixture.controller,
+            pid: 10,
+            windowId: 701,
+            workspaceId: fixture.primaryWorkspaceId,
+            mode: .floating
+        )
+        let secondaryHandle = addManagedTestWindow(
+            on: fixture.controller,
+            pid: 20,
+            windowId: 702,
+            workspaceId: fixture.secondaryWorkspaceId,
+            mode: .floating
+        )
+        _ = primaryHandle
+        _ = secondaryHandle
+        let handler = makeRaiseAllFloatingHandler(controller: fixture.controller, recorder: recorder)
+
+        handler.raiseAllFloatingWindows()
+
+        #expect(recorder.events == [
+            .order(701),
+            .activate(10),
+            .focus(10, 701),
+            .raise,
+            .order(702),
+            .activate(20),
+            .focus(20, 702),
+            .raise
+        ])
+    }
+
+    @Test @MainActor func raiseAllFloatingWindowsUsesTrackedFloatingModeInsteadOfFloatingState() {
+        let recorder = RaiseAllFloatingRecorder()
+        let settings = SettingsStore(defaults: makeFocusTestDefaults())
+        settings.workspaceConfigurations = [
+            WorkspaceConfiguration(name: "1", monitorAssignment: .main)
+        ]
+        let controller = WMController(
+            settings: settings,
+            windowFocusOperations: makeRaiseAllFloatingOperations(recorder: recorder)
+        )
+        let monitor = makeFocusTestMonitor()
+        controller.workspaceManager.applyMonitorConfigurationChange([monitor])
+        guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id else {
+            Issue.record("Expected a visible workspace for raise-all tracked-mode test")
+            return
+        }
+
+        let tiledHandle = addManagedTestWindow(
+            on: controller,
+            pid: 30,
+            windowId: 711,
+            workspaceId: workspaceId
+        )
+        controller.workspaceManager.setFloatingState(
+            .init(
+                lastFrame: CGRect(x: 10, y: 10, width: 400, height: 300),
+                normalizedOrigin: .zero,
+                referenceMonitorId: monitor.id,
+                restoreToFloating: true
+            ),
+            for: tiledHandle.id
+        )
+        _ = addManagedTestWindow(
+            on: controller,
+            pid: 40,
+            windowId: 712,
+            workspaceId: workspaceId,
+            mode: .floating
+        )
+        let handler = makeRaiseAllFloatingHandler(controller: controller, recorder: recorder)
+
+        handler.raiseAllFloatingWindows()
+
+        #expect(recorder.events == [
+            .order(712),
+            .activate(40),
+            .focus(40, 712),
+            .raise
+        ])
+    }
+
+    @Test @MainActor func raiseAllFloatingWindowsProcessesFocusedFloatingWindowLast() {
+        let recorder = RaiseAllFloatingRecorder()
+        let fixture = makeTwoMonitorFocusController(
+            windowFocusOperations: makeRaiseAllFloatingOperations(recorder: recorder)
+        )
+        let interactionFloating = addManagedTestWindow(
+            on: fixture.controller,
+            pid: 20,
+            windowId: 721,
+            workspaceId: fixture.primaryWorkspaceId,
+            mode: .floating
+        )
+        let focusedFloating = addManagedTestWindow(
+            on: fixture.controller,
+            pid: 10,
+            windowId: 722,
+            workspaceId: fixture.secondaryWorkspaceId,
+            mode: .floating
+        )
+
+        _ = fixture.controller.workspaceManager.setManagedFocus(
+            interactionFloating,
+            in: fixture.primaryWorkspaceId,
+            onMonitor: fixture.primaryMonitor.id
+        )
+        _ = fixture.controller.workspaceManager.setManagedFocus(
+            focusedFloating,
+            in: fixture.secondaryWorkspaceId,
+            onMonitor: fixture.secondaryMonitor.id
+        )
+        _ = fixture.controller.workspaceManager.setInteractionMonitor(fixture.primaryMonitor.id)
+        let handler = makeRaiseAllFloatingHandler(controller: fixture.controller, recorder: recorder)
+
+        handler.raiseAllFloatingWindows()
+
+        let focusEvents = recorder.events.compactMap { event -> RaiseAllFloatingEvent? in
+            if case .focus = event {
+                return event
+            }
+            return nil
+        }
+        #expect(focusEvents == [
+            .focus(20, 721),
+            .focus(10, 722)
+        ])
+    }
+
+    @Test @MainActor func raiseAllFloatingWindowsIsNoOpWhileLocked() {
+        let recorder = RaiseAllFloatingRecorder()
+        let (controller, workspaceId, _) = makeFocusTestController(
+            windowFocusOperations: makeRaiseAllFloatingOperations(recorder: recorder)
+        )
+        _ = addManagedTestWindow(
+            on: controller,
+            pid: 50,
+            windowId: 731,
+            workspaceId: workspaceId,
+            mode: .floating
+        )
+        controller.isLockScreenActive = true
+        let handler = makeRaiseAllFloatingHandler(controller: controller, recorder: recorder)
+
+        handler.raiseAllFloatingWindows()
+
+        #expect(recorder.events.isEmpty)
     }
 }

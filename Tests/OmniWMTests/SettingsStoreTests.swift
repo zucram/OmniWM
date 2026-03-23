@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import ApplicationServices
 import Carbon
@@ -233,6 +234,7 @@ private func makeSettingsTestMonitor(
             monitorName: "Roundtrip",
             enabled: true,
             showLabels: false,
+            reserveLayoutSpace: true,
             position: .belowMenuBar,
             windowLevel: .status,
             height: 30
@@ -301,6 +303,7 @@ private func makeSettingsTestMonitor(
     @Test func defaultsReflectPromotedBuiltInValues() {
         let defaults = SettingsExport.defaults()
 
+        #expect(defaults.mouseWarpAxis == MouseWarpAxis.horizontal.rawValue)
         #expect(defaults.mouseWarpMargin == 1)
         #expect(defaults.niriColumnWidthPresets == BuiltInSettingsDefaults.niriColumnWidthPresets)
         #expect(defaults.outerGapLeft == 8)
@@ -316,6 +319,7 @@ private func makeSettingsTestMonitor(
         #expect(defaults.hotkeyBindings == HotkeyBindingRegistry.defaults())
         #expect(defaults.workspaceBarEnabled == true)
         #expect(defaults.workspaceBarNotchAware == true)
+        #expect(defaults.workspaceBarReserveLayoutSpace == false)
         #expect(defaults.appRules == BuiltInSettingsDefaults.appRules)
         #expect(defaults.preventSleepEnabled == false)
         #expect(defaults.scrollSensitivity == 5.0)
@@ -340,6 +344,7 @@ private func makeSettingsTestMonitor(
             "moveMouseToFocusedWindow": false,
             "focusFollowsWindowToMonitor": false,
             "mouseWarpMonitorOrder": [],
+            "mouseWarpAxis": "futureAxis",
             "mouseWarpMargin": 2,
             "gapSize": 8,
             "outerGapLeft": 0,
@@ -368,6 +373,7 @@ private func makeSettingsTestMonitor(
             "workspaceBarNotchAware": false,
             "workspaceBarDeduplicateAppIcons": false,
             "workspaceBarHideEmptyWorkspaces": false,
+            "workspaceBarReserveLayoutSpace": false,
             "workspaceBarHeight": 24,
             "workspaceBarBackgroundOpacity": 0.1,
             "workspaceBarXOffset": 0,
@@ -405,6 +411,7 @@ private func makeSettingsTestMonitor(
         }
         """
         let decoded = try JSONDecoder().decode(SettingsExport.self, from: Data(json.utf8))
+        #expect(decoded.mouseWarpAxis == "futureAxis")
         #expect(decoded.niriCenterFocusedColumn == "futureUnknownValue")
         #expect(decoded.workspaceBarPosition == "futurePosition")
         #expect(decoded.scrollModifierKey == "futureModifier")
@@ -420,6 +427,7 @@ private func makeSettingsTestMonitor(
             moveMouseToFocusedWindow: true,
             focusFollowsWindowToMonitor: true,
             mouseWarpMonitorOrder: ["Monitor1", "Monitor2"],
+            mouseWarpAxis: MouseWarpAxis.vertical.rawValue,
             mouseWarpMargin: 5,
             gapSize: 12.0,
             outerGapLeft: 2.0,
@@ -450,11 +458,12 @@ private func makeSettingsTestMonitor(
             workspaceBarNotchAware: true,
             workspaceBarDeduplicateAppIcons: true,
             workspaceBarHideEmptyWorkspaces: true,
+            workspaceBarReserveLayoutSpace: true,
             workspaceBarHeight: 30.0,
             workspaceBarBackgroundOpacity: 0.5,
             workspaceBarXOffset: 10.0,
             workspaceBarYOffset: 20.0,
-            monitorBarSettings: [MonitorBarSettings(monitorName: "TestBar", enabled: true)],
+            monitorBarSettings: [MonitorBarSettings(monitorName: "TestBar", enabled: true, reserveLayoutSpace: true)],
             appRules: [],
             monitorOrientationSettings: [],
             monitorNiriSettings: [MonitorNiriSettings(monitorName: "TestNiri", maxVisibleColumns: 3)],
@@ -734,10 +743,12 @@ private func makeSettingsTestMonitor(
         let decoded = try JSONDecoder().decode(SettingsExport.self, from: mergedData)
 
         #expect(decoded.hiddenBarIsCollapsed == true)
+        #expect(decoded.mouseWarpAxis == MouseWarpAxis.horizontal.rawValue)
         #expect(decoded.focusFollowsWindowToMonitor == false)
         #expect(decoded.commandPaletteLastMode == CommandPaletteMode.windows.rawValue)
         #expect(decoded.workspaceBarEnabled == true)
         #expect(decoded.workspaceBarNotchAware == true)
+        #expect(decoded.workspaceBarReserveLayoutSpace == false)
         #expect(decoded.workspaceConfigurations == BuiltInSettingsDefaults.workspaceConfigurations)
         #expect(decoded.appRules == BuiltInSettingsDefaults.appRules)
         #expect(decoded.preventSleepEnabled == false)
@@ -750,6 +761,24 @@ private func makeSettingsTestMonitor(
         #expect(decoded.quakeTerminalAutoHide == false)
         #expect(decoded.quakeTerminalUseCustomFrame == false)
         #expect(decoded.quakeTerminalCustomFrame == nil)
+    }
+}
+
+@Suite @MainActor struct WorkspaceBarSettingsResolutionTests {
+    @Test func monitorOverrideCanEnableReservedLayoutSpaceIndependently() {
+        let settings = SettingsStore(defaults: makeTestDefaults())
+        let monitor = makeLayoutPlanTestMonitor(name: "Reservation Test")
+
+        settings.workspaceBarReserveLayoutSpace = false
+        settings.updateBarSettings(
+            MonitorBarSettings(
+                monitorName: monitor.name,
+                monitorDisplayId: monitor.displayId,
+                reserveLayoutSpace: true
+            )
+        )
+
+        #expect(settings.resolvedBarSettings(for: monitor).reserveLayoutSpace == true)
     }
 }
 
@@ -1155,6 +1184,7 @@ private func makeSettingsTestMonitor(
 
         let settings = SettingsStore(defaults: makeTestDefaults())
         settings.focusFollowsWindowToMonitor = true
+        settings.mouseWarpAxis = .vertical
         settings.commandPaletteLastMode = .menu
         settings.quakeTerminalEnabled = true
         settings.quakeTerminalPosition = .bottom
@@ -1173,6 +1203,7 @@ private func makeSettingsTestMonitor(
         try imported.importSettings(from: exportURL)
 
         #expect(imported.focusFollowsWindowToMonitor == true)
+        #expect(imported.mouseWarpAxis == .vertical)
         #expect(imported.commandPaletteLastMode == .menu)
         #expect(imported.quakeTerminalEnabled == true)
         #expect(imported.quakeTerminalPosition == .bottom)
@@ -1187,10 +1218,37 @@ private func makeSettingsTestMonitor(
     }
 }
 
+@Suite(.serialized) @MainActor struct SettingsStoreAppearanceImportTests {
+    @Test func importSettingsApplyingToControllerUsesSharedAppearancePath() throws {
+        let exportURL = makeTestSettingsURL()
+        defer { try? FileManager.default.removeItem(at: exportURL) }
+
+        let application = NSApplication.shared
+        let originalAppearance = application.appearance
+        defer { application.appearance = originalAppearance }
+
+        let exportSource = SettingsStore(defaults: makeTestDefaults())
+        exportSource.hotkeysEnabled = false
+        exportSource.workspaceBarEnabled = false
+        exportSource.appearanceMode = .light
+        try exportSource.exportSettings(to: exportURL, incrementalOnly: false)
+
+        let controller = makeLayoutPlanTestController()
+        defer { controller.setEnabled(false) }
+
+        application.appearance = NSAppearance(named: .darkAqua)
+        try controller.settings.importSettings(from: exportURL, applyingTo: controller)
+
+        #expect(controller.settings.appearanceMode == .light)
+        #expect(application.appearance?.name == .aqua)
+    }
+}
+
 @Suite @MainActor struct SettingsStoreBuiltInDefaultsTests {
     @Test func settingsStoreBootsWithPromotedDefaultsAndExcludedLocalStateStaysOut() {
         let settings = SettingsStore(defaults: makeTestDefaults())
 
+        #expect(settings.mouseWarpAxis == .horizontal)
         #expect(settings.mouseWarpMargin == 1)
         #expect(settings.niriColumnWidthPresets == BuiltInSettingsDefaults.niriColumnWidthPresets)
         #expect(settings.outerGapLeft == 8)
@@ -1206,6 +1264,7 @@ private func makeSettingsTestMonitor(
         #expect(settings.hotkeyBindings == HotkeyBindingRegistry.defaults())
         #expect(settings.workspaceBarEnabled == true)
         #expect(settings.workspaceBarNotchAware == true)
+        #expect(settings.workspaceBarReserveLayoutSpace == false)
         #expect(settings.appRules == BuiltInSettingsDefaults.appRules)
         #expect(settings.mouseWarpMonitorOrder.isEmpty)
         #expect(settings.preventSleepEnabled == false)
@@ -1319,6 +1378,39 @@ private func makeSettingsTestMonitor(
         #expect(resolved == ["Left", "Right"])
         #expect(settings.effectiveMouseWarpMonitorOrder(for: [left]) == ["Left"])
         _ = disconnected
+    }
+
+    @Test func persistEffectiveMouseWarpMonitorOrderUsesVerticalAxisForTopToBottomSeeding() {
+        let defaults = makeTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        let bottom = makeSettingsTestMonitor(displayId: 1, name: "Bottom", x: 0, y: 0)
+        let top = makeSettingsTestMonitor(displayId: 2, name: "Top", x: 320, y: 1080)
+        settings.mouseWarpAxis = .vertical
+
+        let resolved = settings.persistEffectiveMouseWarpMonitorOrder(for: [bottom, top])
+
+        #expect(settings.mouseWarpMonitorOrder == ["Top", "Bottom"])
+        #expect(resolved == ["Top", "Bottom"])
+    }
+
+    @Test func switchingMouseWarpAxisDoesNotRewriteStoredMonitorOrder() {
+        let defaults = makeTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+        settings.mouseWarpMonitorOrder = ["Left", "Right"]
+
+        settings.mouseWarpAxis = .vertical
+
+        #expect(settings.mouseWarpMonitorOrder == ["Left", "Right"])
+    }
+
+    @Test func mouseWarpAxisRoundTripsThroughUserDefaults() {
+        let defaults = makeTestDefaults()
+        let settings = SettingsStore(defaults: defaults)
+
+        settings.mouseWarpAxis = .vertical
+
+        let reloaded = SettingsStore(defaults: defaults)
+        #expect(reloaded.mouseWarpAxis == .vertical)
     }
 }
 

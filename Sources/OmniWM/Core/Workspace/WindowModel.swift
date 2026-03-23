@@ -1,14 +1,64 @@
 import CoreGraphics
 import Foundation
 
+enum TrackedWindowMode: Equatable, Sendable {
+    case tiling
+    case floating
+}
+
 final class WindowModel {
     typealias WindowKey = WindowToken
 
-    struct HiddenState {
+    enum HiddenReason: Equatable {
+        case workspaceInactive
+        case layoutTransient(HideSide)
+        case scratchpad
+    }
+
+    struct HiddenState: Equatable {
         let proportionalPosition: CGPoint
         let referenceMonitorId: Monitor.ID?
-        let workspaceInactive: Bool
-        let offscreenSide: HideSide?
+        let reason: HiddenReason
+
+        var workspaceInactive: Bool {
+            if case .workspaceInactive = reason {
+                return true
+            }
+            return false
+        }
+
+        var offscreenSide: HideSide? {
+            if case let .layoutTransient(side) = reason {
+                return side
+            }
+            return nil
+        }
+
+        var isScratchpad: Bool {
+            if case .scratchpad = reason {
+                return true
+            }
+            return false
+        }
+
+        var restoresViaFloatingState: Bool {
+            switch reason {
+            case .workspaceInactive, .scratchpad:
+                true
+            case .layoutTransient:
+                false
+            }
+        }
+
+        init(
+            proportionalPosition: CGPoint,
+            referenceMonitorId: Monitor.ID?,
+            reason: HiddenReason
+        ) {
+            self.proportionalPosition = proportionalPosition
+            self.referenceMonitorId = referenceMonitorId
+            self.reason = reason
+        }
 
         init(
             proportionalPosition: CGPoint,
@@ -18,8 +68,32 @@ final class WindowModel {
         ) {
             self.proportionalPosition = proportionalPosition
             self.referenceMonitorId = referenceMonitorId
-            self.workspaceInactive = workspaceInactive
-            self.offscreenSide = offscreenSide
+            if workspaceInactive {
+                reason = .workspaceInactive
+            } else if let offscreenSide {
+                reason = .layoutTransient(offscreenSide)
+            } else {
+                reason = .scratchpad
+            }
+        }
+    }
+
+    struct FloatingState: Equatable {
+        var lastFrame: CGRect
+        var normalizedOrigin: CGPoint?
+        var referenceMonitorId: Monitor.ID?
+        var restoreToFloating: Bool
+
+        init(
+            lastFrame: CGRect,
+            normalizedOrigin: CGPoint?,
+            referenceMonitorId: Monitor.ID?,
+            restoreToFloating: Bool
+        ) {
+            self.lastFrame = lastFrame
+            self.normalizedOrigin = normalizedOrigin
+            self.referenceMonitorId = referenceMonitorId
+            self.restoreToFloating = restoreToFloating
         }
     }
 
@@ -27,11 +101,13 @@ final class WindowModel {
         let handle: WindowHandle
         var axRef: AXWindowRef
         var workspaceId: WorkspaceDescriptor.ID
+        var mode: TrackedWindowMode
+        var floatingState: FloatingState?
+        var manualLayoutOverride: ManualWindowOverride?
         var ruleEffects: ManagedWindowRuleEffects = .none
         var hiddenProportionalPosition: CGPoint?
         var hiddenReferenceMonitorId: Monitor.ID?
-        var hiddenByWorkspaceInactivity: Bool = false
-        var hiddenOffscreenSide: HideSide?
+        var hiddenReason: HiddenReason?
 
         var layoutReason: LayoutReason = .standard
         var parentKind: ParentKind = .tilingContainer
@@ -47,12 +123,18 @@ final class WindowModel {
             handle: WindowHandle,
             axRef: AXWindowRef,
             workspaceId: WorkspaceDescriptor.ID,
+            mode: TrackedWindowMode,
+            floatingState: FloatingState?,
+            manualLayoutOverride: ManualWindowOverride?,
             ruleEffects: ManagedWindowRuleEffects,
             hiddenProportionalPosition: CGPoint?
         ) {
             self.handle = handle
             self.axRef = axRef
             self.workspaceId = workspaceId
+            self.mode = mode
+            self.floatingState = floatingState
+            self.manualLayoutOverride = manualLayoutOverride
             self.ruleEffects = ruleEffects
             self.hiddenProportionalPosition = hiddenProportionalPosition
         }
@@ -102,12 +184,14 @@ final class WindowModel {
         pid: pid_t,
         windowId: Int,
         workspace: WorkspaceDescriptor.ID,
+        mode: TrackedWindowMode = .tiling,
         ruleEffects: ManagedWindowRuleEffects = .none
     ) -> WindowToken {
         let token = WindowToken(pid: pid, windowId: windowId)
         if let entry = entries[token] {
             entry.axRef = window
             updateWorkspace(for: token, workspace: workspace)
+            entry.mode = mode
             if entry.ruleEffects != ruleEffects {
                 entry.ruleEffects = ruleEffects
                 entry.cachedConstraints = nil
@@ -122,6 +206,9 @@ final class WindowModel {
             handle: handle,
             axRef: window,
             workspaceId: workspace,
+            mode: mode,
+            floatingState: nil,
+            manualLayoutOverride: nil,
             ruleEffects: ruleEffects,
             hiddenProportionalPosition: nil
         )
@@ -184,6 +271,13 @@ final class WindowModel {
         return tokens.compactMap { entries[$0] }
     }
 
+    func windows(
+        in workspace: WorkspaceDescriptor.ID,
+        mode: TrackedWindowMode
+    ) -> [Entry] {
+        windows(in: workspace).filter { $0.mode == mode }
+    }
+
     func workspace(for token: WindowToken) -> WorkspaceDescriptor.ID? {
         entries[token]?.workspaceId
     }
@@ -218,29 +312,56 @@ final class WindowModel {
         Array(entries.values)
     }
 
+    func allEntries(mode: TrackedWindowMode) -> [Entry] {
+        entries.values.filter { $0.mode == mode }
+    }
+
+    func mode(for token: WindowToken) -> TrackedWindowMode? {
+        entries[token]?.mode
+    }
+
+    func setMode(_ mode: TrackedWindowMode, for token: WindowToken) {
+        entries[token]?.mode = mode
+    }
+
+    func floatingState(for token: WindowToken) -> FloatingState? {
+        entries[token]?.floatingState
+    }
+
+    func setFloatingState(_ state: FloatingState?, for token: WindowToken) {
+        entries[token]?.floatingState = state
+    }
+
+    func manualLayoutOverride(for token: WindowToken) -> ManualWindowOverride? {
+        entries[token]?.manualLayoutOverride
+    }
+
+    func setManualLayoutOverride(_ override: ManualWindowOverride?, for token: WindowToken) {
+        entries[token]?.manualLayoutOverride = override
+    }
+
     func setHiddenState(_ state: HiddenState?, for token: WindowToken) {
         guard let entry = entries[token] else { return }
         if let state {
             entry.hiddenProportionalPosition = state.proportionalPosition
             entry.hiddenReferenceMonitorId = state.referenceMonitorId
-            entry.hiddenByWorkspaceInactivity = state.workspaceInactive
-            entry.hiddenOffscreenSide = state.offscreenSide
+            entry.hiddenReason = state.reason
         } else {
             entry.hiddenProportionalPosition = nil
             entry.hiddenReferenceMonitorId = nil
-            entry.hiddenByWorkspaceInactivity = false
-            entry.hiddenOffscreenSide = nil
+            entry.hiddenReason = nil
         }
     }
 
     func hiddenState(for token: WindowToken) -> HiddenState? {
         guard let entry = entries[token],
-              let proportionalPosition = entry.hiddenProportionalPosition else { return nil }
+              let proportionalPosition = entry.hiddenProportionalPosition,
+              let hiddenReason = entry.hiddenReason
+        else { return nil }
         return HiddenState(
             proportionalPosition: proportionalPosition,
             referenceMonitorId: entry.hiddenReferenceMonitorId,
-            workspaceInactive: entry.hiddenByWorkspaceInactivity,
-            offscreenSide: entry.hiddenOffscreenSide
+            reason: hiddenReason
         )
     }
 

@@ -36,6 +36,7 @@ struct SettingsExport: Codable {
     var moveMouseToFocusedWindow: Bool
     var focusFollowsWindowToMonitor: Bool
     var mouseWarpMonitorOrder: [String]
+    var mouseWarpAxis: String?
     var mouseWarpMargin: Int
     var gapSize: Double
     var outerGapLeft: Double
@@ -71,6 +72,7 @@ struct SettingsExport: Codable {
     var workspaceBarNotchAware: Bool
     var workspaceBarDeduplicateAppIcons: Bool
     var workspaceBarHideEmptyWorkspaces: Bool
+    var workspaceBarReserveLayoutSpace: Bool
     var workspaceBarHeight: Double
     var workspaceBarBackgroundOpacity: Double
     var workspaceBarXOffset: Double
@@ -123,6 +125,7 @@ extension SettingsExport {
             moveMouseToFocusedWindow: false,
             focusFollowsWindowToMonitor: false,
             mouseWarpMonitorOrder: [],
+            mouseWarpAxis: MouseWarpAxis.horizontal.rawValue,
             mouseWarpMargin: 1,
             gapSize: 8,
             outerGapLeft: 8,
@@ -153,6 +156,7 @@ extension SettingsExport {
             workspaceBarNotchAware: true,
             workspaceBarDeduplicateAppIcons: false,
             workspaceBarHideEmptyWorkspaces: false,
+            workspaceBarReserveLayoutSpace: false,
             workspaceBarHeight: 24.0,
             workspaceBarBackgroundOpacity: 0.1,
             workspaceBarXOffset: 0.0,
@@ -300,6 +304,7 @@ extension SettingsStore {
             moveMouseToFocusedWindow: moveMouseToFocusedWindow,
             focusFollowsWindowToMonitor: focusFollowsWindowToMonitor,
             mouseWarpMonitorOrder: mouseWarpMonitorOrder,
+            mouseWarpAxis: mouseWarpAxis.rawValue,
             mouseWarpMargin: mouseWarpMargin,
             gapSize: gapSize,
             outerGapLeft: outerGapLeft,
@@ -330,6 +335,7 @@ extension SettingsStore {
             workspaceBarNotchAware: workspaceBarNotchAware,
             workspaceBarDeduplicateAppIcons: workspaceBarDeduplicateAppIcons,
             workspaceBarHideEmptyWorkspaces: workspaceBarHideEmptyWorkspaces,
+            workspaceBarReserveLayoutSpace: workspaceBarReserveLayoutSpace,
             workspaceBarHeight: workspaceBarHeight,
             workspaceBarBackgroundOpacity: workspaceBarBackgroundOpacity,
             workspaceBarXOffset: workspaceBarXOffset,
@@ -392,6 +398,7 @@ extension SettingsStore {
         moveMouseToFocusedWindow = export.moveMouseToFocusedWindow
         focusFollowsWindowToMonitor = export.focusFollowsWindowToMonitor
         mouseWarpMonitorOrder = export.mouseWarpMonitorOrder
+        mouseWarpAxis = MouseWarpAxis(rawValue: export.mouseWarpAxis ?? "") ?? .horizontal
         mouseWarpMargin = export.mouseWarpMargin
         gapSize = export.gapSize
         outerGapLeft = export.outerGapLeft
@@ -429,6 +436,7 @@ extension SettingsStore {
         workspaceBarNotchAware = export.workspaceBarNotchAware
         workspaceBarDeduplicateAppIcons = export.workspaceBarDeduplicateAppIcons
         workspaceBarHideEmptyWorkspaces = export.workspaceBarHideEmptyWorkspaces
+        workspaceBarReserveLayoutSpace = export.workspaceBarReserveLayoutSpace
         workspaceBarHeight = export.workspaceBarHeight
         workspaceBarBackgroundOpacity = export.workspaceBarBackgroundOpacity
         workspaceBarXOffset = export.workspaceBarXOffset

@@ -43,6 +43,13 @@ A powerful tiling window manager for macOS.
       <a href="https://github.com/lgerlinski"><strong>Lukas Gerlinski</strong></a>
     </td>
     <td align="center">
+      <a href="https://github.com/zucram" title="Marcus Harlid Davin">
+        <img src="https://github.com/zucram.png?size=96" width="96" alt="Marcus Harlid Davin">
+      </a>
+      <br>
+      <a href="https://github.com/zucram"><strong>Marcus Harlid Davin</strong></a>
+    </td>
+    <td align="center">
       <a href="https://github.com/chenhaozhenss" title="Williamufo">
         <img src="https://github.com/chenhaozhenss.png?size=96" width="96" alt="Williamufo">
       </a>
@@ -209,7 +216,7 @@ In Niri, `Move Left / Right` expels the focused window out of multi-window colum
 | Action | Shortcut |
 |--------|----------|
 | Toggle Fullscreen | `Option + Return` |
-| Command Palette | `Ctrl + Option + Space` |
+| Toggle Command Palette | `Ctrl + Option + Space` |
 | Menu Anywhere | `Ctrl + Option + M` |
 | Quake Terminal | `` Option + ` `` |
 | Overview | `Option + Shift + O` |
@@ -253,7 +260,7 @@ A drop-down terminal (powered by Ghostty) that slides in from the screen edge:
 #### Command Palette
 
 Quickly search windows or app menus from one shared palette:
-- Press `Ctrl + Option + Space`
+- Press `Ctrl + Option + Space` to toggle
 - Switch between `Windows` and `Menu`
 - Type to fuzzy-search by window title, app name, or menu item
 - Menu results always show keyboard shortcuts when available

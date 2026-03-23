@@ -25,6 +25,10 @@ final class SettingsStore {
         didSet { saveMouseWarpMonitorOrder() }
     }
 
+    var mouseWarpAxis: MouseWarpAxis {
+        didSet { defaults.set(mouseWarpAxis.rawValue, forKey: Keys.mouseWarpAxis) }
+    }
+
     var niriColumnWidthPresets: [Double] {
         didSet { saveNiriColumnWidthPresets() }
     }
@@ -150,6 +154,10 @@ final class SettingsStore {
 
     var workspaceBarHideEmptyWorkspaces: Bool {
         didSet { defaults.set(workspaceBarHideEmptyWorkspaces, forKey: Keys.workspaceBarHideEmptyWorkspaces) }
+    }
+
+    var workspaceBarReserveLayoutSpace: Bool {
+        didSet { defaults.set(workspaceBarReserveLayoutSpace, forKey: Keys.workspaceBarReserveLayoutSpace) }
     }
 
     var workspaceBarHeight: Double {
@@ -345,6 +353,7 @@ final class SettingsStore {
         moveMouseToFocusedWindow = defaults.object(forKey: Keys.moveMouseToFocusedWindow) as? Bool ?? false
         focusFollowsWindowToMonitor = defaults.object(forKey: Keys.focusFollowsWindowToMonitor) as? Bool ?? false
         mouseWarpMonitorOrder = Self.loadMouseWarpMonitorOrder(from: defaults)
+        mouseWarpAxis = MouseWarpAxis(rawValue: defaults.string(forKey: Keys.mouseWarpAxis) ?? "") ?? .horizontal
         niriColumnWidthPresets = Self.loadNiriColumnWidthPresets(from: defaults)
         niriDefaultColumnWidth = Self.loadNiriDefaultColumnWidth(from: defaults)
         mouseWarpMargin = defaults.object(forKey: Keys.mouseWarpMargin) as? Int ?? 1
@@ -389,6 +398,8 @@ final class SettingsStore {
             .object(forKey: Keys.workspaceBarDeduplicateAppIcons) as? Bool ?? false
         workspaceBarHideEmptyWorkspaces = defaults
             .object(forKey: Keys.workspaceBarHideEmptyWorkspaces) as? Bool ?? false
+        workspaceBarReserveLayoutSpace = defaults
+            .object(forKey: Keys.workspaceBarReserveLayoutSpace) as? Bool ?? false
         workspaceBarHeight = defaults.object(forKey: Keys.workspaceBarHeight) as? Double ?? 24.0
         workspaceBarBackgroundOpacity = defaults.object(forKey: Keys.workspaceBarBackgroundOpacity) as? Double ?? 0.1
         workspaceBarXOffset = defaults.object(forKey: Keys.workspaceBarXOffset) as? Double ?? 0.0
@@ -521,8 +532,8 @@ final class SettingsStore {
         defaults.set(data, forKey: Keys.workspaceConfigurations)
     }
 
-    func effectiveMouseWarpMonitorOrder(for monitors: [Monitor]) -> [String] {
-        let sortedNames = Monitor.sortedByPosition(monitors).map(\.name)
+    func effectiveMouseWarpMonitorOrder(for monitors: [Monitor], axis: MouseWarpAxis? = nil) -> [String] {
+        let sortedNames = (axis ?? mouseWarpAxis).sortedMonitors(monitors).map(\.name)
         guard !sortedNames.isEmpty else { return [] }
 
         var remainingCounts = sortedNames.reduce(into: [String: Int]()) { counts, name in
@@ -546,8 +557,9 @@ final class SettingsStore {
     }
 
     @discardableResult
-    func persistEffectiveMouseWarpMonitorOrder(for monitors: [Monitor]) -> [String] {
-        let sortedNames = Monitor.sortedByPosition(monitors).map(\.name)
+    func persistEffectiveMouseWarpMonitorOrder(for monitors: [Monitor], axis: MouseWarpAxis? = nil) -> [String] {
+        let warpAxis = axis ?? mouseWarpAxis
+        let sortedNames = warpAxis.sortedMonitors(monitors).map(\.name)
         guard !sortedNames.isEmpty else { return [] }
 
         var persisted = mouseWarpMonitorOrder
@@ -572,7 +584,7 @@ final class SettingsStore {
             mouseWarpMonitorOrder = persisted
         }
 
-        return effectiveMouseWarpMonitorOrder(for: monitors)
+        return effectiveMouseWarpMonitorOrder(for: monitors, axis: warpAxis)
     }
 
     private static func normalizedWorkspaceConfigurations(_ configs: [WorkspaceConfiguration]) -> [WorkspaceConfiguration] {
@@ -623,6 +635,7 @@ final class SettingsStore {
             showLabels: override?.showLabels ?? workspaceBarShowLabels,
             deduplicateAppIcons: override?.deduplicateAppIcons ?? workspaceBarDeduplicateAppIcons,
             hideEmptyWorkspaces: override?.hideEmptyWorkspaces ?? workspaceBarHideEmptyWorkspaces,
+            reserveLayoutSpace: override?.reserveLayoutSpace ?? workspaceBarReserveLayoutSpace,
             notchAware: override?.notchAware ?? workspaceBarNotchAware,
             position: override?.position ?? workspaceBarPosition,
             windowLevel: override?.windowLevel ?? workspaceBarWindowLevel,
@@ -829,6 +842,7 @@ private enum Keys {
     static let moveMouseToFocusedWindow = "settings.moveMouseToFocusedWindow"
     static let focusFollowsWindowToMonitor = "settings.focusFollowsWindowToMonitor"
     static let mouseWarpMonitorOrder = "settings.mouseWarp.monitorOrder"
+    static let mouseWarpAxis = "settings.mouseWarp.axis"
     static let niriColumnWidthPresets = "settings.niriColumnWidthPresets"
     static let niriDefaultColumnWidth = "settings.niriDefaultColumnWidth"
     static let mouseWarpMargin = "settings.mouseWarp.margin"
@@ -874,6 +888,7 @@ private enum Keys {
     static let workspaceBarNotchAware = "settings.workspaceBar.notchAware"
     static let workspaceBarDeduplicateAppIcons = "settings.workspaceBar.deduplicateAppIcons"
     static let workspaceBarHideEmptyWorkspaces = "settings.workspaceBar.hideEmptyWorkspaces"
+    static let workspaceBarReserveLayoutSpace = "settings.workspaceBar.reserveLayoutSpace"
     static let workspaceBarHeight = "settings.workspaceBar.height"
     static let workspaceBarBackgroundOpacity = "settings.workspaceBar.backgroundOpacity"
     static let workspaceBarXOffset = "settings.workspaceBar.xOffset"

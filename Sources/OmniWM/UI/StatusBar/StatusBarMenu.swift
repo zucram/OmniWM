@@ -3,6 +3,11 @@ import AppKit
 private let menuWidth: CGFloat = 280
 
 @MainActor
+private func applyCurrentAppAppearance(to view: NSView) {
+    view.appearance = NSApplication.shared.appearance
+}
+
+@MainActor
 final class StatusBarMenuBuilder {
     private let settings: SettingsStore
     private weak var controller: WMController?
@@ -22,8 +27,11 @@ final class StatusBarMenuBuilder {
     }
 
     func buildMenu() -> NSMenu {
+        toggleViews.removeAll(keepingCapacity: true)
+
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.appearance = NSApplication.shared.appearance
 
         let headerItem = NSMenuItem()
         headerItem.view = createHeaderView()
@@ -322,6 +330,7 @@ final class MenuHeaderView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 56))
+        applyCurrentAppAppearance(to: self)
         setupViews()
     }
 
@@ -368,6 +377,7 @@ final class MenuHeaderView: NSView {
 final class MenuSectionLabelView: NSView {
     init(text: String) {
         super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 24))
+        applyCurrentAppAppearance(to: self)
 
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 10, weight: .medium)
@@ -385,6 +395,7 @@ final class MenuSectionLabelView: NSView {
 final class MenuDividerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 9))
+        applyCurrentAppAppearance(to: self)
 
         let divider = NSBox(frame: NSRect(x: 8, y: 4, width: menuWidth - 16, height: 1))
         divider.boxType = .separator
@@ -417,6 +428,7 @@ final class MenuToggleSwitchView: NSView {
     init(isOn: Bool) {
         self.isOn = isOn
         super.init(frame: NSRect(x: 0, y: 0, width: 42, height: 22))
+        applyCurrentAppAppearance(to: self)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
 
@@ -525,6 +537,7 @@ final class MenuToggleRowView: NSView {
         self.onChange = onChange
         self.toggle = MenuToggleSwitchView(isOn: isOn)
         super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 28))
+        applyCurrentAppAppearance(to: self)
 
         wantsLayer = true
 
@@ -632,6 +645,7 @@ final class MenuActionRowView: NSView {
         self.action = action
         self.isDestructive = isDestructive
         super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: 28))
+        applyCurrentAppAppearance(to: self)
 
         wantsLayer = true
 

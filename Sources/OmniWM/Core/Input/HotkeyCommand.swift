@@ -54,9 +54,12 @@ enum HotkeyCommand: Codable, Equatable, Hashable {
 
     case raiseAllFloatingWindows
     case toggleFocusedWindowFloating
+    case assignFocusedWindowToScratchpad
+    case toggleScratchpadWindow
 
     case openMenuAnywhere
 
+    case toggleWorkspaceBarVisibility
     case toggleHiddenBar
     case toggleQuakeTerminal
     case toggleWorkspaceLayout
@@ -102,10 +105,13 @@ enum HotkeyCommand: Codable, Equatable, Hashable {
         case .workspaceBackAndForth: "Switch to Previous Workspace"
         case let .focusWorkspaceAnywhere(idx): "Focus Workspace \(idx + 1) Anywhere"
         case let .moveWindowToWorkspaceOnMonitor(wsIdx, monDir): "Move Window to Workspace \(wsIdx + 1) on \(monDir.displayName) Monitor"
-        case .openCommandPalette: "Open Command Palette"
+        case .openCommandPalette: "Toggle Command Palette"
         case .raiseAllFloatingWindows: "Raise All Floating Windows"
         case .toggleFocusedWindowFloating: "Toggle Focused Window Floating"
+        case .assignFocusedWindowToScratchpad: "Assign Focused Window to Scratchpad"
+        case .toggleScratchpadWindow: "Toggle Scratchpad Window"
         case .openMenuAnywhere: "Open Menu Anywhere"
+        case .toggleWorkspaceBarVisibility: "Toggle Workspace Bar"
         case .toggleHiddenBar: "Toggle Hidden Bar"
         case .toggleQuakeTerminal: "Toggle Quake Terminal"
         case .toggleWorkspaceLayout: "Toggle Workspace Layout"
@@ -135,8 +141,10 @@ enum HotkeyCommand: Codable, Equatable, Hashable {
              .workspaceBackAndForth, .focusWorkspaceAnywhere,
              .moveWindowToWorkspaceOnMonitor,
              .openCommandPalette, .raiseAllFloatingWindows, .toggleFocusedWindowFloating,
+             .assignFocusedWindowToScratchpad, .toggleScratchpadWindow,
              .openMenuAnywhere,
-             .toggleHiddenBar, .toggleQuakeTerminal, .toggleWorkspaceLayout, .toggleOverview:
+             .toggleWorkspaceBarVisibility, .toggleHiddenBar, .toggleQuakeTerminal,
+             .toggleWorkspaceLayout, .toggleOverview:
             .shared
         }
     }
