@@ -233,6 +233,7 @@ extension NiriLayoutEngine {
             column.savedWidth = nil
             column.presetWidthIdx = resolvedWidth.presetWidthIdx
             column.hasManualSingleWindowWidthOverride = false
+            column.usesDefaultWidth = false
 
             column.animateWidthTo(
                 newWidth: targetPixels,

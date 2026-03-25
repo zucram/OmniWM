@@ -190,10 +190,15 @@ final class NiriLayoutEngine {
         return (1.0 / CGFloat(effectiveMaxVisibleColumns(in: workspaceId)), nil)
     }
 
-    func initializeNewColumnWidth(_ column: NiriContainer, in workspaceId: WorkspaceDescriptor.ID) {
+    func applyDefaultColumnWidth(to column: NiriContainer, in workspaceId: WorkspaceDescriptor.ID) {
         let resolvedWidth = resolvedColumnResetWidth(in: workspaceId)
         column.width = .proportion(resolvedWidth.proportion)
         column.presetWidthIdx = resolvedWidth.presetWidthIdx
+    }
+
+    func initializeNewColumnWidth(_ column: NiriContainer, in workspaceId: WorkspaceDescriptor.ID) {
+        applyDefaultColumnWidth(to: column, in: workspaceId)
+        column.usesDefaultWidth = true
 
         column.cachedWidth = 0
         column.isFullWidth = false
@@ -201,6 +206,18 @@ final class NiriLayoutEngine {
         column.hasManualSingleWindowWidthOverride = false
         column.widthAnimation = nil
         column.targetWidth = nil
+    }
+
+    func refreshDefaultDerivedColumnWidths(in workspaceId: WorkspaceDescriptor.ID) {
+        for column in columns(in: workspaceId) where column.usesDefaultWidth {
+            applyDefaultColumnWidth(to: column, in: workspaceId)
+        }
+    }
+
+    private func refreshAllDefaultDerivedColumnWidths() {
+        for workspaceId in roots.keys {
+            refreshDefaultDerivedColumnWidths(in: workspaceId)
+        }
     }
 
     private func matchingPresetIndex(for width: CGFloat) -> Int? {
@@ -328,6 +345,8 @@ final class NiriLayoutEngine {
         presetColumnWidths: [PresetSize]? = nil,
         defaultColumnWidth: CGFloat?? = nil
     ) {
+        let shouldRefreshDefaultWidths = maxVisibleColumns != nil || defaultColumnWidth != nil
+
         if let max = maxWindowsPerColumn {
             self.maxWindowsPerColumn = max.clamped(to: 1 ... 10)
         }
@@ -354,6 +373,10 @@ final class NiriLayoutEngine {
         if let presets = presetColumnWidths, !presets.isEmpty {
             self.presetColumnWidths = presets
             resetAllPresetWidthIndices()
+        }
+
+        if shouldRefreshDefaultWidths {
+            refreshAllDefaultDerivedColumnWidths()
         }
     }
 

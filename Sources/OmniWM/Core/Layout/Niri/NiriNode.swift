@@ -303,6 +303,8 @@ class NiriContainer: NiriNode {
 
     private(set) var activeTileIdx: Int = 0
 
+    var usesDefaultWidth: Bool = true
+
     var width: ProportionalSize = .default
 
     var cachedWidth: CGFloat = 0

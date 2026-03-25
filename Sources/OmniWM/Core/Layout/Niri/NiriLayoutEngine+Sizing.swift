@@ -132,6 +132,8 @@ extension NiriLayoutEngine {
             }
         }
 
+        column.usesDefaultWidth = false
+
         let presetCount = presetColumnWidths.count
 
         let nextIdx: Int
@@ -227,6 +229,8 @@ extension NiriLayoutEngine {
             column.hasManualSingleWindowWidthOverride = true
             targetPixels = workingAreaWidth
         }
+
+        column.usesDefaultWidth = false
 
         column.animateWidthTo(
             newWidth: targetPixels,

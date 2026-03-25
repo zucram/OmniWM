@@ -88,6 +88,9 @@ extension NiriLayoutEngine {
         column.detach()
 
         targetRoot.appendChild(column)
+        if column.usesDefaultWidth {
+            applyDefaultColumnWidth(to: column, in: targetWorkspaceId)
+        }
 
         if sourceRoot.columns.isEmpty {
             let emptyColumn = NiriContainer()

@@ -191,6 +191,7 @@ extension NiriLayoutEngine {
             let newWidth = originalWidth + dx
             column.cachedWidth = newWidth.clamped(to: minWidth ... maxWidth)
             column.width = .fixed(column.cachedWidth)
+            column.usesDefaultWidth = false
             changed = true
 
             if resize.edges.contains(.left), let origOffset = resize.originalViewOffset {

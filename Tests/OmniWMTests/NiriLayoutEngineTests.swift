@@ -588,7 +588,8 @@ private func makeCenteredCrossMonitorFixture(
         centerFocusedColumn: CenterFocusedColumn? = nil,
         alwaysCenterSingleColumn: Bool? = nil,
         singleWindowAspectRatio: SingleWindowAspectRatio? = nil,
-        infiniteLoop: Bool? = nil
+        infiniteLoop: Bool? = nil,
+        defaultColumnWidth: Double? = nil
     ) -> ResolvedNiriSettings {
         let global = engine.globalResolvedSettings()
         return ResolvedNiriSettings(
@@ -597,7 +598,8 @@ private func makeCenteredCrossMonitorFixture(
             centerFocusedColumn: centerFocusedColumn ?? global.centerFocusedColumn,
             alwaysCenterSingleColumn: alwaysCenterSingleColumn ?? global.alwaysCenterSingleColumn,
             singleWindowAspectRatio: singleWindowAspectRatio ?? global.singleWindowAspectRatio,
-            infiniteLoop: infiniteLoop ?? global.infiniteLoop
+            infiniteLoop: infiniteLoop ?? global.infiniteLoop,
+            defaultColumnWidth: defaultColumnWidth ?? global.defaultColumnWidth
         )
     }
 
@@ -2713,6 +2715,66 @@ private func makeCenteredCrossMonitorFixture(
 
         #expect(baselineFrame.width > overrideFrame.width)
         #expect(abs(overrideFrame.width - overrideFrame.height) < 0.5)
+    }
+
+    @Test @MainActor func monitorDefaultColumnWidthOverrideRefreshesDefaultDerivedColumns() async throws {
+        let monitor = makeLayoutPlanTestMonitor(name: "WidthOverride")
+        let controller = makeLayoutPlanTestController(monitors: [monitor])
+        guard let workspaceId = controller.workspaceManager.activeWorkspaceOrFirst(on: monitor.id)?.id
+        else {
+            Issue.record("Missing active workspace for default width override test")
+            return
+        }
+
+        controller.enableNiriLayout(
+            maxWindowsPerColumn: 1,
+            centerFocusedColumn: .never,
+            alwaysCenterSingleColumn: false
+        )
+        controller.updateNiriConfig(
+            maxVisibleColumns: 3,
+            centerFocusedColumn: .never,
+            alwaysCenterSingleColumn: false,
+            defaultColumnWidth: 0.35
+        )
+        await waitForLayoutPlanRefreshWork(on: controller)
+        controller.syncMonitorsToNiriEngine()
+
+        _ = addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: 901)
+        _ = addLayoutPlanTestWindow(on: controller, workspaceId: workspaceId, windowId: 902)
+
+        _ = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+
+        guard let baselineColumn = controller.niriEngine?.columns(in: workspaceId).last else {
+            Issue.record("Expected a second Niri column before applying the monitor override")
+            return
+        }
+
+        #expect(baselineColumn.width == .proportion(0.35))
+        #expect(baselineColumn.usesDefaultWidth)
+
+        controller.settings.updateNiriSettings(
+            MonitorNiriSettings(
+                monitorName: monitor.name,
+                monitorDisplayId: monitor.displayId,
+                defaultColumnWidth: 0.75
+            )
+        )
+        controller.updateMonitorNiriSettings()
+
+        _ = try await controller.niriLayoutHandler.layoutWithNiriEngine(
+            activeWorkspaces: [workspaceId]
+        )
+
+        guard let overrideColumn = controller.niriEngine?.columns(in: workspaceId).last else {
+            Issue.record("Expected a second Niri column after applying the monitor override")
+            return
+        }
+
+        #expect(overrideColumn.width == .proportion(0.75))
+        #expect(overrideColumn.usesDefaultWidth)
     }
 
     @Test @MainActor func snapshotPlanIncludesViewportPatchAndActivationForNewWindow() async throws {

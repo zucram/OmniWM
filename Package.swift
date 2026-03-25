@@ -13,9 +13,10 @@ let package = Package(
         )
     ],
     targets: [
-        .binaryTarget(
+        .target(
             name: "GhosttyKit",
-            path: "Frameworks/GhosttyKit.xcframework"
+            path: "Sources/GhosttyKit",
+            publicHeadersPath: "include"
         ),
         .target(
             name: "OmniWM",

@@ -45,7 +45,12 @@ extension NiriLayoutEngine {
     }
 
     func updateMonitorSettings(_ settings: ResolvedNiriSettings, for monitorId: Monitor.ID) {
-        monitors[monitorId]?.resolvedSettings = settings
+        guard let monitor = monitors[monitorId] else { return }
+        monitor.resolvedSettings = settings
+
+        for workspaceId in monitor.workspaceRoots.keys {
+            refreshDefaultDerivedColumnWidths(in: workspaceId)
+        }
     }
 
     func globalResolvedSettings() -> ResolvedNiriSettings {
@@ -163,6 +168,7 @@ extension NiriLayoutEngine {
                 monitor: assignment.monitor
             )
             attachWorkspaceRootIfNeeded(assignment.workspaceId, to: targetMonitor)
+            refreshDefaultDerivedColumnWidths(in: assignment.workspaceId)
         }
     }
 
